@@ -1,0 +1,385 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["queryCompiler", "driverAdapters"]
+  engineType      = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  TREASURER
+  MEMBER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum MemberStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum RepaymentType {
+  FLAT
+  REDUCING
+}
+
+enum LoanStatus {
+  PENDING
+  ACTIVE
+  COMPLETED
+  DEFAULTED
+  RESTRUCTURED
+  REJECTED
+}
+
+enum ProductCategory {
+  PHONE
+  LAPTOP
+  FOOD
+  APPLIANCE
+  OTHER
+}
+
+enum SaleStatus {
+  PENDING
+  ACTIVE
+  COMPLETED
+  REJECTED
+}
+
+enum RepaymentSource {
+  PAYROLL
+  MANUAL
+}
+
+enum PaymentTarget {
+  LOAN
+  SAVINGS
+}
+
+enum PaymentClaimStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+}
+
+enum BalanceCode {
+  SAVINGS
+  LOAN
+}
+
+enum ImportRowStatus {
+  APPLIED
+  FAILED
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  name         String
+  role         Role
+  status       UserStatus @default(ACTIVE)
+  memberId     String?    @unique
+  member       Member?    @relation(fields: [memberId], references: [id])
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+}
+
+model Member {
+  id                  String       @id @default(cuid())
+  membershipNumber    String       @unique
+  fullName            String
+  department          String?
+  employeeNumber      String?
+  dateJoined           DateTime
+  monthlyContribution Decimal      @db.Decimal(14, 2)
+  phone               String?
+  email               String?
+  status              MemberStatus @default(ACTIVE)
+  // Carried-forward opening balances for members migrated from manual records.
+  openingSavingsBalance Decimal    @default(0) @db.Decimal(14, 2)
+  openingLoanBalance    Decimal    @default(0) @db.Decimal(14, 2)
+  // Bank details — used for loan disbursement payments and (later) dividend payouts.
+  bankName            String?
+  bankAccountNumber   String?
+  bankAccountName     String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  user          User?
+  contributions Contribution[]
+  loans         Loan[]
+  productSales  ProductSale[]
+  paymentClaims PaymentClaim[]
+
+  @@index([status])
+}
+
+model Contribution {
+  id        String   @id @default(cuid())
+  memberId  String
+  member    Member   @relation(fields: [memberId], references: [id])
+  month     DateTime @db.Date
+  amount    Decimal  @db.Decimal(14, 2)
+  createdAt DateTime @default(now())
+
+  @@unique([memberId, month])
+  @@index([month])
+}
+
+model Loan {
+  id                 String        @id @default(cuid())
+  memberId           String
+  member             Member        @relation(fields: [memberId], references: [id])
+  loanAmount         Decimal       @db.Decimal(14, 2)
+  interestRate       Decimal       @db.Decimal(6, 3)
+  repaymentType      RepaymentType @default(FLAT)
+  durationMonths     Int
+  startMonth         DateTime      @db.Date
+  endMonth           DateTime      @db.Date
+  totalInterest      Decimal       @db.Decimal(14, 2)
+  totalRepayment     Decimal       @db.Decimal(14, 2)
+  monthlyRepayment   Decimal       @db.Decimal(14, 2)
+  outstandingBalance Decimal       @db.Decimal(14, 2)
+  status             LoanStatus    @default(ACTIVE)
+  suspendedFrom      DateTime?     @db.Date
+  suspendedUntil     DateTime?     @db.Date
+  note               String?
+  // Approval workflow: a member-submitted request starts PENDING with requestedById set;
+  // an Admin/Treasurer sign-off (approvedById/approvedAt) moves it to ACTIVE, or REJECTED
+  // with a reason. A loan created directly by staff can skip straight to ACTIVE.
+  requestedById      String?
+  approvedById       String?
+  approvedAt         DateTime?
+  rejectionReason    String?
+  // Set when the loan amount exceeds the standard 150%-of-savings eligibility cap and the
+  // requester explicitly asked for an exception, with a reason. Exception loans always require
+  // PENDING review by an Admin specifically — never auto-approved, even if an Admin requested it.
+  isExceptionRequest Boolean       @default(false)
+  exceptionReason    String?
+  // Restructuring: the old loan is frozen at status RESTRUCTURED (no more repayments collected
+  // against it) and its remaining outstandingBalance becomes the new loan's principal under new
+  // terms. At most one link in each direction, enforced by the @unique on restructuredFromLoanId.
+  restructuredFromLoanId String?  @unique
+  restructuredFromLoan   Loan?    @relation("LoanRestructure", fields: [restructuredFromLoanId], references: [id])
+  restructuredIntoLoan   Loan?    @relation("LoanRestructure")
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  repayments    LoanRepayment[]
+  paymentClaims PaymentClaim[]
+
+  @@index([memberId])
+  @@index([status])
+}
+
+model LoanRepayment {
+  id           String          @id @default(cuid())
+  loanId       String
+  loan         Loan            @relation(fields: [loanId], references: [id])
+  month        DateTime        @db.Date
+  amount       Decimal         @db.Decimal(14, 2)
+  principal    Decimal         @db.Decimal(14, 2)
+  interest     Decimal         @db.Decimal(14, 2)
+  balanceAfter Decimal         @db.Decimal(14, 2)
+  // PAYROLL rows come from posting the monthly deduction schedule (one per loan per month,
+  // enforced by application logic rather than a DB constraint — see source-scoped lookups in
+  // schedule.ts). MANUAL rows are lump-sum / early repayments recorded directly against the
+  // loan (e.g. from a confirmed PaymentClaim) and can occur any number of times in a month.
+  source       RepaymentSource @default(PAYROLL)
+  reference    String?
+  recordedById String?
+  createdAt    DateTime        @default(now())
+
+  @@index([loanId, month])
+  @@index([month])
+}
+
+model ProductSale {
+  id                 String          @id @default(cuid())
+  memberId           String
+  member             Member          @relation(fields: [memberId], references: [id])
+  itemName           String
+  category           ProductCategory
+  cost               Decimal         @db.Decimal(14, 2)
+  interestRate       Decimal         @db.Decimal(6, 3)
+  durationMonths     Int
+  startMonth         DateTime        @db.Date
+  endMonth           DateTime        @db.Date
+  totalInterest      Decimal         @db.Decimal(14, 2)
+  totalRepayment     Decimal         @db.Decimal(14, 2)
+  monthlyDeduction   Decimal         @db.Decimal(14, 2)
+  outstandingBalance Decimal         @db.Decimal(14, 2)
+  status             SaleStatus      @default(ACTIVE)
+  requestedById      String?
+  approvedById       String?
+  approvedAt         DateTime?
+  rejectionReason    String?
+  isExceptionRequest Boolean         @default(false)
+  exceptionReason    String?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  repayments ProductRepayment[]
+
+  @@index([memberId])
+  @@index([status])
+}
+
+// Product purchases are always settled by direct/manual payment (cash, bank transfer) rather
+// than payroll, so every row here is effectively "MANUAL" — no source field needed, and
+// multiple payments in the same month are expected (partial payments), hence no uniqueness
+// constraint on (saleId, month).
+model ProductRepayment {
+  id           String      @id @default(cuid())
+  saleId       String
+  sale         ProductSale @relation(fields: [saleId], references: [id])
+  month        DateTime    @db.Date
+  amount       Decimal     @db.Decimal(14, 2)
+  balanceAfter Decimal     @db.Decimal(14, 2)
+  reference    String?
+  recordedById String?
+  createdAt    DateTime    @default(now())
+
+  @@index([saleId, month])
+  @@index([month])
+}
+
+// One row per month once the deduction schedule for that month has been posted to payroll.
+// Prevents re-posting the same month twice and records who posted it.
+model DeductionScheduleRun {
+  id         String   @id @default(cuid())
+  month      DateTime @unique @db.Date
+  postedById String
+  postedAt   DateTime @default(now())
+  memberCount Int
+  totalSavings Decimal @db.Decimal(14, 2)
+  totalLoanRepayment Decimal @db.Decimal(14, 2)
+  totalDeduction Decimal @db.Decimal(14, 2)
+}
+
+// Audit trail for bulk opening-balance uploads (savings/loan balances brought forward from
+// manual records via Excel).
+model BalanceImport {
+  id           String             @id @default(cuid())
+  fileName     String
+  importedById String
+  createdAt    DateTime           @default(now())
+  rows         BalanceImportRow[]
+}
+
+model BalanceImportRow {
+  id               String          @id @default(cuid())
+  importId         String
+  import           BalanceImport   @relation(fields: [importId], references: [id])
+  rowNumber        Int
+  membershipNumber String
+  fullNameInFile   String?
+  code             BalanceCode
+  amount           Decimal         @db.Decimal(14, 2)
+  status           ImportRowStatus
+  message          String?
+
+  @@index([importId])
+}
+
+// API keys for external ERP / payroll systems to pull data via the read-only integration API.
+model ApiKey {
+  id          String    @id @default(cuid())
+  label       String
+  keyHash     String    @unique
+  keyPreview  String
+  createdById String
+  createdAt   DateTime  @default(now())
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+}
+
+// Append-only trail for money-moving and balance-changing actions. Not user-editable.
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  actorName  String
+  action     String
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+// A member's self-reported direct payment into the cooperative's bank account (loan
+// repayment or extra savings), pending Treasurer/Admin verification against the actual bank
+// statement before it's credited. Confirming a LOAN claim creates a MANUAL LoanRepayment;
+// confirming a SAVINGS claim creates/increases that month's Contribution.
+model PaymentClaim {
+  id              String              @id @default(cuid())
+  memberId        String
+  member          Member              @relation(fields: [memberId], references: [id])
+  target          PaymentTarget
+  loanId          String?
+  loan            Loan?               @relation(fields: [loanId], references: [id])
+  amount          Decimal             @db.Decimal(14, 2)
+  paidOn          DateTime            @db.Date
+  reference       String
+  note            String?
+  status          PaymentClaimStatus  @default(PENDING)
+  submittedAt     DateTime            @default(now())
+  reviewedById    String?
+  reviewedAt      DateTime?
+  rejectionReason String?
+
+  @@index([memberId])
+  @@index([status])
+}
+
+// Single-row table of cooperative-wide policy settings. There is exactly one row, fetched via
+// getOrCreateSettings() in lib/services/settings.ts rather than a fixed known id.
+model CooperativeSettings {
+  id                        String   @id @default(cuid())
+  orgName                   String   @default("Staff Cooperative")
+  logoUrl                   String?
+  currencySymbol            String   @default("₦")
+  loanEligibilityMultiplier Decimal  @default(1.5) @db.Decimal(5, 2)
+  updatedById               String?
+  updatedAt                 DateTime @updatedAt
+}
+
+// A preset loan configuration (e.g. "Emergency Loan — 12% / 6mo") the loan-creation form can
+// pick from, instead of the rate/duration always being hand-typed.
+model LoanProduct {
+  id             String        @id @default(cuid())
+  name           String
+  interestRate   Decimal       @db.Decimal(6, 3)
+  durationMonths Int
+  repaymentType  RepaymentType @default(FLAT)
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([isActive])
+}
+
+// Single-use password reset tokens. tokenHash is a SHA-256 of the raw token — the raw value is
+// only ever in the emailed/logged link, never stored.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
