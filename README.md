@@ -1,7 +1,5 @@
 # coopms — Cooperative Management System
 
-[![CI](https://github.com/maibroda/coopms/actions/workflows/ci.yml/badge.svg)](https://github.com/maibroda/coopms/actions/workflows/ci.yml)
-
 A Next.js + TypeScript + PostgreSQL app for running a staff cooperative: member savings,
 loans, product sales, payroll deductions, maker-checker approvals, audit logging, member
 self-service, bulk Excel import/export, and an ERP integration API.
