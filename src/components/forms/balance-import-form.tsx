@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { naira } from "@/lib/money";
+import { MonthDropdown } from "@/components/month-dropdown";
 
 export function BalanceImportForm() {
   const [state, action, pending] = useActionState(importBalancesAction, undefined);
@@ -12,6 +13,10 @@ export function BalanceImportForm() {
   return (
     <div className="space-y-4">
       <form action={action} className="flex flex-wrap items-end gap-3">
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-foreground/80">These balances are as of</label>
+          <MonthDropdown name="asOfDate" />
+        </div>
         <div className="space-y-1">
           <label className="text-xs font-medium text-foreground/80">Excel file (.xlsx)</label>
           <input

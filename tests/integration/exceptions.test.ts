@@ -31,7 +31,14 @@ describe("loan eligibility exceptions", () => {
     treasurerCtx = { userId: treasurer.id, role: "TREASURER", name: treasurer.name, email: treasurer.email };
 
     const member = await createMember(adminCtx, {
-      fullName: "Exception Test Member",
+      firstName: "Exception",
+      lastName: "Test Member",
+      gender: "OTHER",
+      houseAddress: "Test address",
+      region: "LAGOS",
+      nextOfKinName: "Test Kin",
+      nextOfKinAddress: "Test address",
+      nextOfKinPhone: "08000000000",
       dateJoined: "2026-01-01",
       monthlyContribution: 5000,
       openingSavingsBalance: 100000, // caps borrowing at 150,000

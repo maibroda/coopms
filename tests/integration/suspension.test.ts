@@ -39,7 +39,14 @@ describe("loan suspension defers installments instead of forgiving them", () => 
     ctx = { userId: admin.id, role: "ADMIN", name: admin.name, email: admin.email };
 
     const member = await createMember(ctx, {
-      fullName: "Suspension Test Member",
+      firstName: "Suspension",
+      lastName: "Test Member",
+      gender: "OTHER",
+      houseAddress: "Test address",
+      region: "LAGOS",
+      nextOfKinName: "Test Kin",
+      nextOfKinAddress: "Test address",
+      nextOfKinPhone: "08000000000",
       dateJoined: "2026-01-01",
       monthlyContribution: 5000,
       openingSavingsBalance: 500000,

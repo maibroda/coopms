@@ -6,6 +6,13 @@ import { listMembers, totalSavings } from "./members";
 import { listLoans } from "./loans";
 import { listSales } from "./sales";
 import { previewSchedule } from "./schedule";
+import {
+  getLoanInterestReport,
+  getSalesInterestReport,
+  getSavingsBreakdown,
+  getLoanRepaymentPeriods,
+  getIrregularRepaymentReport,
+} from "./reports";
 import type { Ctx } from "@/lib/auth/context";
 import { can, ForbiddenError } from "@/lib/auth/permissions";
 
@@ -24,6 +31,9 @@ export async function exportMembersXlsx(ctx: Ctx): Promise<Buffer> {
   ws.columns = [
     { header: "Membership No", key: "no", width: 16 },
     { header: "Full Name", key: "name", width: 26 },
+    { header: "Gender", key: "gender", width: 10 },
+    { header: "Member Type", key: "memberType", width: 12 },
+    { header: "Region", key: "region", width: 16 },
     { header: "Department", key: "dept", width: 20 },
     { header: "Date Joined", key: "joined", width: 14 },
     { header: "Monthly Contribution", key: "mc", width: 20 },
@@ -38,6 +48,9 @@ export async function exportMembersXlsx(ctx: Ctx): Promise<Buffer> {
     ws.addRow({
       no: m.membershipNumber,
       name: m.fullName,
+      gender: m.gender,
+      memberType: m.memberType,
+      region: m.region,
       dept: m.department ?? "",
       joined: m.dateJoined.toISOString().slice(0, 10),
       mc: num(m.monthlyContribution),
@@ -128,14 +141,29 @@ export async function exportScheduleXlsx(ctx: Ctx, month: Date): Promise<Buffer>
     { header: "Member", key: "name", width: 26 },
     { header: "Department", key: "dept", width: 20 },
     { header: "Savings", key: "savings", width: 14 },
-    { header: "Loan Repayment", key: "loan", width: 16 },
+    { header: "Loan Repayment — Principal", key: "principal", width: 22 },
+    { header: "Loan Repayment — Interest", key: "interest", width: 22 },
     { header: "Total Deduction", key: "total", width: 16 },
   ];
   for (const r of preview.rows) {
-    ws.addRow({ no: r.membershipNumber, name: r.fullName, dept: r.department ?? "", savings: r.savings, loan: r.loanRepayment, total: r.total });
+    ws.addRow({
+      no: r.membershipNumber,
+      name: r.fullName,
+      dept: r.department ?? "",
+      savings: r.savings,
+      principal: r.loanPrincipal,
+      interest: r.loanInterest,
+      total: r.total,
+    });
   }
   ws.addRow({});
-  ws.addRow({ name: "Total", savings: preview.totals.savings, loan: preview.totals.loanRepayment, total: preview.totals.total });
+  ws.addRow({
+    name: "Total",
+    savings: preview.totals.savings,
+    principal: preview.totals.loanPrincipal,
+    interest: preview.totals.loanInterest,
+    total: preview.totals.total,
+  });
   ws.getRow(ws.rowCount).font = { bold: true };
   styleHeader(ws);
   return toBuffer(wb);
@@ -208,6 +236,99 @@ export async function exportReportsXlsx(ctx: Ctx): Promise<Buffer> {
   incomeSheet.addRow({ k: "Sales interest (accrued)", v: salesInterest });
   incomeSheet.addRow({ k: "Total income", v: interestEarned + salesInterest });
   styleHeader(incomeSheet);
+
+  const [loanInterest, salesInterestReport, savings, loanPeriods, irregular] = await Promise.all([
+    getLoanInterestReport(ctx),
+    getSalesInterestReport(ctx),
+    getSavingsBreakdown(ctx),
+    getLoanRepaymentPeriods(ctx),
+    getIrregularRepaymentReport(ctx),
+  ]);
+
+  const loanInterestSheet = wb.addWorksheet("Loan Interest by Period");
+  loanInterestSheet.columns = [
+    { header: "Period", key: "period", width: 18 },
+    { header: "Interest", key: "interest", width: 18 },
+    { header: "Deferment Penalty", key: "penalty", width: 20 },
+  ];
+  loanInterestSheet.addRow({ period: "— Monthly —" });
+  for (const m of loanInterest.monthly) loanInterestSheet.addRow({ period: m.label, interest: m.interest, penalty: m.penalty });
+  loanInterestSheet.addRow({});
+  loanInterestSheet.addRow({ period: "— Yearly —" });
+  for (const y of loanInterest.yearly) loanInterestSheet.addRow({ period: String(y.year), interest: y.interest, penalty: y.penalty });
+  styleHeader(loanInterestSheet);
+
+  const salesInterestSheet = wb.addWorksheet("Sales Interest by Period");
+  salesInterestSheet.columns = [
+    { header: "Period", key: "period", width: 18 },
+    { header: "Interest", key: "interest", width: 18 },
+  ];
+  salesInterestSheet.addRow({ period: "— Monthly —" });
+  for (const m of salesInterestReport.monthly) salesInterestSheet.addRow({ period: m.label, interest: m.interest });
+  salesInterestSheet.addRow({});
+  salesInterestSheet.addRow({ period: "— Yearly —" });
+  for (const y of salesInterestReport.yearly) salesInterestSheet.addRow({ period: String(y.year), interest: y.interest });
+  styleHeader(salesInterestSheet);
+
+  const savingsSheet = wb.addWorksheet("Savings by Dept & Region");
+  savingsSheet.columns = [
+    { header: "Department", key: "dept", width: 22 },
+    { header: "Savings", key: "deptSavings", width: 18 },
+    { header: "Region", key: "region", width: 18 },
+    { header: "Savings ", key: "regionSavings", width: 18 },
+  ];
+  const maxRows = Math.max(savings.byDepartment.length, savings.byRegion.length);
+  for (let i = 0; i < maxRows; i++) {
+    savingsSheet.addRow({
+      dept: savings.byDepartment[i]?.label ?? "",
+      deptSavings: savings.byDepartment[i]?.savings ?? "",
+      region: savings.byRegion[i]?.label ?? "",
+      regionSavings: savings.byRegion[i]?.savings ?? "",
+    });
+  }
+  styleHeader(savingsSheet);
+
+  const periodsSheet = wb.addWorksheet("Loan Repayment Periods");
+  periodsSheet.columns = [
+    { header: "Member", key: "name", width: 26 },
+    { header: "Loan Amount", key: "amount", width: 16 },
+    { header: "Start", key: "start", width: 14 },
+    { header: "End", key: "end", width: 14 },
+    { header: "Installments Paid", key: "paid", width: 18 },
+    { header: "Duration (months)", key: "duration", width: 18 },
+    { header: "Status", key: "status", width: 14 },
+  ];
+  for (const l of loanPeriods) {
+    periodsSheet.addRow({
+      name: l.memberName,
+      amount: l.loanAmount,
+      start: periodName(l.startMonth),
+      end: periodName(l.endMonth),
+      paid: l.installmentsPaid,
+      duration: l.durationMonths,
+      status: l.status,
+    });
+  }
+  styleHeader(periodsSheet);
+
+  const irregularSheet = wb.addWorksheet("Irregular Repayments");
+  irregularSheet.columns = [
+    { header: "Member", key: "name", width: 26 },
+    { header: "Member Status", key: "status", width: 14 },
+    { header: "Outstanding", key: "outstanding", width: 16 },
+    { header: "Payments Recorded", key: "count", width: 18 },
+    { header: "Payment History", key: "history", width: 60 },
+  ];
+  for (const r of irregular) {
+    irregularSheet.addRow({
+      name: r.memberName,
+      status: r.memberStatus,
+      outstanding: r.outstandingBalance,
+      count: r.monthsWithPayment,
+      history: r.payments.map((p) => `${periodName(p.month)}: ${p.amount}`).join("; "),
+    });
+  }
+  styleHeader(irregularSheet);
 
   return toBuffer(wb);
 }

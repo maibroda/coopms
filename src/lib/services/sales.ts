@@ -208,9 +208,29 @@ export async function recordSaleRepayment(
   const balanceAfter = round2(num(sale.outstandingBalance) - applied);
   const month = monthStart(new Date(input.paidOn).getUTCFullYear(), new Date(input.paidOn).getUTCMonth() + 1);
 
+  // Sales don't have a per-installment amortization schedule (they're always settled by
+  // free-form direct payment, never payroll), so each payment's interest portion is allocated
+  // proportionally to the sale's overall interest-to-total ratio, capped at whatever interest
+  // hasn't been recognized yet so the running total never exceeds totalInterest.
+  const priorInterestAgg = await db.productRepayment.aggregate({ where: { saleId }, _sum: { interest: true } });
+  const priorInterest = num(priorInterestAgg._sum.interest ?? 0);
+  const remainingInterest = Math.max(round2(num(sale.totalInterest) - priorInterest), 0);
+  const proportionalInterest = round2(applied * (num(sale.totalInterest) / num(sale.totalRepayment)));
+  const interestPortion = Math.min(proportionalInterest, remainingInterest, applied);
+  const principalPortion = round2(applied - interestPortion);
+
   const [repayment] = await db.$transaction([
     db.productRepayment.create({
-      data: { saleId, month, amount: applied, balanceAfter, reference: input.reference || null, recordedById: ctx.userId },
+      data: {
+        saleId,
+        month,
+        amount: applied,
+        principal: principalPortion,
+        interest: interestPortion,
+        balanceAfter,
+        reference: input.reference || null,
+        recordedById: ctx.userId,
+      },
     }),
     db.productSale.update({
       where: { id: saleId },

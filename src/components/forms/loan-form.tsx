@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Label, Select } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ExceptionField } from "@/components/forms/exception-field";
+import { MonthDropdown } from "@/components/month-dropdown";
 import type { EligibilityResult } from "@/lib/services/loans";
 
 export interface LoanProductOption {
@@ -120,7 +121,7 @@ export function LoanForm({
           </div>
           <div className="space-y-1">
             <Label htmlFor="startMonth">Start month</Label>
-            <Input id="startMonth" name="startMonth" type="month" required />
+            <MonthDropdown name="startMonth" />
           </div>
           <div className="space-y-1 sm:col-span-2">
             <Label htmlFor="note">Note (optional)</Label>

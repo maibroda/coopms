@@ -114,6 +114,34 @@ export async function restructureLoanAction(loanId: string, memberId: string, v:
   );
 }
 
+export async function adjustLoanAction(loanId: string, memberId: string, v: V) {
+  return act(
+    "loan.manage",
+    async (ctx) => {
+      await svc.adjustLoan(ctx, loanId, {
+        loanAmount: Number(v.loanAmount),
+        interestRate: Number(v.interestRate),
+        durationMonths: Number(v.durationMonths),
+        repaymentType: (v.repaymentType as "FLAT" | "REDUCING") ?? "FLAT",
+        startMonth: String(v.startMonth),
+      });
+      return { message: "Loan terms corrected." };
+    },
+    ["/loans", `/members/${memberId}`],
+  );
+}
+
+export async function recomputeEarlyPayoffAction(loanId: string, memberId: string, asOfDate?: string) {
+  return act(
+    "loan.manage",
+    async (ctx) => {
+      const updated = await svc.recomputeEarlyPayoff(ctx, loanId, asOfDate);
+      return { message: `Balance recomputed for early payoff: now ₦${Number(updated.outstandingBalance).toLocaleString()}.` };
+    },
+    ["/loans", `/members/${memberId}`],
+  );
+}
+
 export async function recordManualLoanRepaymentAction(loanId: string, memberId: string, v: V) {
   return act(
     "loan.manage",

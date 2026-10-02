@@ -13,6 +13,15 @@ import { PrintButton } from "@/components/print-button";
 import { StatementTable } from "@/components/statement-table";
 import { MemberStatusButton } from "@/components/forms/member-status-button";
 
+const REGION_LABELS: Record<string, string> = {
+  SOUTH_WEST: "South West",
+  LAGOS: "Lagos",
+  NORTH_CENTRAL: "North Central",
+  NORTH_EAST: "North East",
+  SOUTH_SOUTH: "South South",
+  SOUTH_EAST: "South East",
+};
+
 export default async function MemberDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await requirePage("member.view");
   const { id } = await params;
@@ -71,13 +80,34 @@ export default async function MemberDetailPage({ params }: { params: Promise<{ i
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-2 p-4 text-sm sm:grid-cols-2">
           <p>
-            Loan eligibility: can borrow up to <strong>{naira(loanEligibility.availableToBorrow)}</strong> more
-            (cap of {naira(loanEligibility.maxBorrowable)} — less {naira(loanEligibility.currentOutstandingPrincipal)} already borrowed).
+            {loanEligibility.tooNewToBorrow ? (
+              <>Loan eligibility: <strong>not yet eligible to borrow</strong> — under 6 months&apos; membership.</>
+            ) : (
+              <>
+                Loan eligibility: can borrow up to <strong>{naira(loanEligibility.availableToBorrow)}</strong> more
+                (cap of {naira(loanEligibility.maxBorrowable)} — less {naira(loanEligibility.currentOutstandingPrincipal)} already borrowed).
+              </>
+            )}
           </p>
           <p>
             Purchase eligibility: can take up to <strong>{naira(purchaseEligibility.availableCapacity)}</strong> more
             in credit purchases (savings less {naira(purchaseEligibility.outstandingPurchases)} outstanding).
           </p>
+        </CardContent>
+      </Card>
+
+      <Card className="no-print">
+        <CardHeader>
+          <CardTitle>Personal details</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 gap-2 p-4 text-sm sm:grid-cols-3">
+          <p><span className="text-muted-foreground">Gender:</span> {member.gender}</p>
+          <p><span className="text-muted-foreground">Member type:</span> {member.memberType === "EXTERNAL" ? "External member" : "Employee"}</p>
+          <p><span className="text-muted-foreground">Region:</span> {REGION_LABELS[member.region] ?? member.region}</p>
+          <p className="sm:col-span-3"><span className="text-muted-foreground">House address:</span> {member.houseAddress}</p>
+          <p><span className="text-muted-foreground">Next of kin:</span> {member.nextOfKinName}</p>
+          <p><span className="text-muted-foreground">Next of kin phone:</span> {member.nextOfKinPhone}</p>
+          <p><span className="text-muted-foreground">Next of kin address:</span> {member.nextOfKinAddress}</p>
         </CardContent>
       </Card>
 

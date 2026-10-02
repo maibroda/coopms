@@ -12,7 +12,7 @@
 import "dotenv/config";
 import { db } from "../src/lib/db";
 import { createUser } from "../src/lib/services/auth";
-import { createMember } from "../src/lib/services/members";
+import { createMember, setMemberStatus } from "../src/lib/services/members";
 import { createLoan, suspendLoan, markLoanStatus, requestLoan, recordManualLoanRepayment } from "../src/lib/services/loans";
 import { createSale, requestSale, recordSaleRepayment } from "../src/lib/services/sales";
 import { submitPaymentClaim, confirmPaymentClaim } from "../src/lib/services/paymentClaims";
@@ -58,15 +58,33 @@ const DEPARTMENTS = [
   "Legal", "Procurement", "Customer Service", "Engineering", "Marketing",
 ];
 const BANKS = ["GTBank", "Access Bank", "Zenith Bank", "First Bank", "UBA", "Fidelity Bank", "Sterling Bank", "Union Bank", "Wema Bank", "Stanbic IBTC"];
+const REGIONS = ["SOUTH_WEST", "LAGOS", "NORTH_CENTRAL", "NORTH_EAST", "SOUTH_SOUTH", "SOUTH_EAST"] as const;
+const CITIES_BY_REGION: Record<(typeof REGIONS)[number], string> = {
+  SOUTH_WEST: "Ibadan",
+  LAGOS: "Lagos",
+  NORTH_CENTRAL: "Abuja",
+  NORTH_EAST: "Bauchi",
+  SOUTH_SOUTH: "Port Harcourt",
+  SOUTH_EAST: "Enugu",
+};
 
 function fakeAccountNumber(seed: number): string {
   return String(1000000000 + ((seed * 7919) % 900000000)).padStart(10, "0");
 }
 
 interface GeneratedMember {
+  firstName: string;
+  lastName: string;
   fullName: string;
-  department: string;
-  employeeNumber: string;
+  gender: "MALE" | "FEMALE";
+  region: (typeof REGIONS)[number];
+  houseAddress: string;
+  nextOfKinName: string;
+  nextOfKinAddress: string;
+  nextOfKinPhone: string;
+  memberType: "EMPLOYEE" | "EXTERNAL";
+  department: string | null;
+  employeeNumber: string | null;
   dateJoined: string;
   monthlyContribution: number;
   phone: string;
@@ -76,6 +94,13 @@ interface GeneratedMember {
   bankAccountNumber: string;
   bankAccountName: string;
 }
+
+// A female first name in FIRST_NAMES (used to assign a plausible gender to generated members —
+// this is demo data only, not a claim about any real person).
+const FEMALE_FIRST_NAMES = new Set([
+  "Adaeze", "Ngozi", "Fatima", "Blessing", "Amaka", "Chioma", "Grace", "Funmi", "Aisha",
+  "Temitope", "Hauwa", "Bola", "Ifeoma", "Rita", "Zainab", "Damilola", "Patience",
+]);
 
 function generateMembers(count: number): GeneratedMember[] {
   const out: GeneratedMember[] = [];
@@ -95,10 +120,27 @@ function generateMembers(count: number): GeneratedMember[] {
     const tenureMonths = Math.max(0, (2026 - joinYear) * 12 - (joinMonth - 1));
     const openingSavingsBalance = joinYear < 2026 ? tenureMonths * monthlyContribution : 0;
     const bank = BANKS[i % BANKS.length];
+    const region = REGIONS[i % REGIONS.length];
+    const city = CITIES_BY_REGION[region];
+    const gender: "MALE" | "FEMALE" = FEMALE_FIRST_NAMES.has(first) ? "FEMALE" : "MALE";
+    // The last two generated members (index 33, 34) are external members — not staff of the
+    // sponsoring organization, so no employeeNumber/department.
+    const isExternal = i >= count - 2;
+    const nokFirst = FIRST_NAMES[(i + 7) % FIRST_NAMES.length];
+    const nokLast = LAST_NAMES[(i + 3) % LAST_NAMES.length];
     out.push({
+      firstName: first,
+      lastName: last,
       fullName,
-      department,
-      employeeNumber: `EMP-${String(1001 + i).padStart(4, "0")}`,
+      gender,
+      region,
+      houseAddress: `${10 + i} ${last} Street, ${city}`,
+      nextOfKinName: `${nokFirst} ${nokLast}`,
+      nextOfKinAddress: `${20 + i} ${nokLast} Close, ${city}`,
+      nextOfKinPhone: `081${String(40000000 + i).padStart(8, "0")}`,
+      memberType: isExternal ? "EXTERNAL" : "EMPLOYEE",
+      department: isExternal ? null : department,
+      employeeNumber: isExternal ? null : `EMP-${String(1001 + i).padStart(4, "0")}`,
       dateJoined,
       monthlyContribution,
       phone: `080${String(30000000 + i).padStart(8, "0")}`,
@@ -228,6 +270,25 @@ async function main() {
     paidOn: "2026-09-18",
     reference: "CASH-RECEIPT-4471",
   });
+
+  console.log("Demonstrating an ex-member with inconsistent repayment…");
+  // A member who left the cooperative but still owes on a loan, paying back in irregular
+  // lump sums whenever they can rather than a steady scheduled amount — exactly the pattern the
+  // irregular-repayment report is built to surface.
+  const exMemberLoan = await createLoan(ctx, {
+    memberId: members[19].id,
+    loanAmount: 100000,
+    interestRate: 9,
+    durationMonths: 10,
+    repaymentType: "FLAT",
+    startMonth: "2026-01-01",
+    note: "Member exited the cooperative partway through repayment.",
+  });
+  await recordManualLoanRepayment(treasurerCtx, exMemberLoan.id, { amount: 5000, paidOn: "2026-03-05", reference: "CASH-9001" });
+  await recordManualLoanRepayment(treasurerCtx, exMemberLoan.id, { amount: 15000, paidOn: "2026-05-18", reference: "BANK-TRF-9002" });
+  await recordManualLoanRepayment(treasurerCtx, exMemberLoan.id, { amount: 2000, paidOn: "2026-07-02", reference: "CASH-9003" });
+  await recordManualLoanRepayment(treasurerCtx, exMemberLoan.id, { amount: 10000, paidOn: "2026-09-25", reference: "BANK-TRF-9004" });
+  await setMemberStatus(ctx, members[19].id, "INACTIVE", true);
 
   console.log("Demonstrating member-reported direct payments (PaymentClaim)…");
   // One confirmed (Treasurer already verified it against the bank statement)…

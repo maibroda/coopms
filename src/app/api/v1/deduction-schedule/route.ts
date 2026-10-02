@@ -20,6 +20,8 @@ export async function GET(req: NextRequest) {
       fullName: r.fullName,
       department: r.department,
       savings: r.savings,
+      loanRepaymentPrincipal: r.loanPrincipal,
+      loanRepaymentInterest: r.loanInterest,
       loanRepayment: r.loanRepayment,
       totalDeduction: r.total,
     })),

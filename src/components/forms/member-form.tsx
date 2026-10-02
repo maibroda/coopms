@@ -3,13 +3,42 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createMemberAction, updateMemberAction } from "@/app/actions/members";
 import { Button } from "@/components/ui/button";
-import { Input, Label } from "@/components/ui/input";
+import { Input, Label, Select } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+export const GENDER_OPTIONS = [
+  { value: "MALE", label: "Male" },
+  { value: "FEMALE", label: "Female" },
+  { value: "OTHER", label: "Other" },
+];
+
+export const REGION_OPTIONS = [
+  { value: "SOUTH_WEST", label: "South West" },
+  { value: "LAGOS", label: "Lagos" },
+  { value: "NORTH_CENTRAL", label: "North Central" },
+  { value: "NORTH_EAST", label: "North East" },
+  { value: "SOUTH_SOUTH", label: "South South" },
+  { value: "SOUTH_EAST", label: "South East" },
+];
+
+export const MEMBER_TYPE_OPTIONS = [
+  { value: "EMPLOYEE", label: "Employee" },
+  { value: "EXTERNAL", label: "External member" },
+];
 
 export interface MemberFormValues {
   id?: string;
   membershipNumber?: string;
-  fullName?: string;
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
+  gender?: string;
+  houseAddress?: string;
+  region?: string;
+  nextOfKinName?: string;
+  nextOfKinAddress?: string;
+  nextOfKinPhone?: string;
+  memberType?: string;
   department?: string;
   employeeNumber?: string;
   dateJoined?: string;
@@ -53,15 +82,53 @@ export function MemberForm({ initial }: { initial?: MemberFormValues }) {
             <Input id="membershipNumber" name="membershipNumber" defaultValue={initial?.membershipNumber} disabled={!!initial?.id} />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="fullName">Full name</Label>
-            <Input id="fullName" name="fullName" required defaultValue={initial?.fullName} />
+            <Label htmlFor="firstName">First name</Label>
+            <Input id="firstName" name="firstName" required defaultValue={initial?.firstName} />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="middleName">Middle name</Label>
+            <Input id="middleName" name="middleName" defaultValue={initial?.middleName} />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="lastName">Last name</Label>
+            <Input id="lastName" name="lastName" required defaultValue={initial?.lastName} />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="gender">Gender</Label>
+            <Select id="gender" name="gender" required defaultValue={initial?.gender ?? ""}>
+              <option value="" disabled>Select…</option>
+              {GENDER_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="memberType">Member type</Label>
+            <Select id="memberType" name="memberType" required defaultValue={initial?.memberType ?? "EMPLOYEE"}>
+              {MEMBER_TYPE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="region">Region</Label>
+            <Select id="region" name="region" required defaultValue={initial?.region ?? ""}>
+              <option value="" disabled>Select…</option>
+              {REGION_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-1 sm:col-span-2">
+            <Label htmlFor="houseAddress">House address</Label>
+            <Input id="houseAddress" name="houseAddress" required defaultValue={initial?.houseAddress} />
           </div>
           <div className="space-y-1">
             <Label htmlFor="department">Department</Label>
             <Input id="department" name="department" defaultValue={initial?.department} />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="employeeNumber">Employee number</Label>
+            <Label htmlFor="employeeNumber">Employee number (external members can leave blank)</Label>
             <Input id="employeeNumber" name="employeeNumber" defaultValue={initial?.employeeNumber} />
           </div>
           <div className="space-y-1">
@@ -87,6 +154,26 @@ export function MemberForm({ initial }: { initial?: MemberFormValues }) {
           <div className="space-y-1">
             <Label htmlFor="openingLoanBalance">Opening loan balance (₦, carried forward)</Label>
             <Input id="openingLoanBalance" name="openingLoanBalance" type="number" min="0" step="0.01" defaultValue={initial?.openingLoanBalance ?? 0} />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Next of kin</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-3">
+          <div className="space-y-1">
+            <Label htmlFor="nextOfKinName">Name</Label>
+            <Input id="nextOfKinName" name="nextOfKinName" required defaultValue={initial?.nextOfKinName} />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="nextOfKinAddress">Address</Label>
+            <Input id="nextOfKinAddress" name="nextOfKinAddress" required defaultValue={initial?.nextOfKinAddress} />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="nextOfKinPhone">Phone number</Label>
+            <Input id="nextOfKinPhone" name="nextOfKinPhone" required defaultValue={initial?.nextOfKinPhone} />
           </div>
         </CardContent>
       </Card>

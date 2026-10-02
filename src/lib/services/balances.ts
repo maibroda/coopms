@@ -2,6 +2,8 @@ import ExcelJS from "exceljs";
 import { db } from "@/lib/db";
 import { round2 } from "@/lib/money";
 import { logAudit } from "./auditLog";
+import { addMonths } from "@/lib/dates";
+import { calcLoan, type RepaymentType } from "@/lib/calc";
 import type { Ctx } from "@/lib/auth/context";
 import { can, ForbiddenError } from "@/lib/auth/permissions";
 
@@ -17,10 +19,24 @@ export async function generateBalanceTemplate(): Promise<Buffer> {
     { header: "Names", key: "name", width: 28 },
     { header: "Code", key: "code", width: 12 },
     { header: "Amount", key: "amount", width: 16 },
+    { header: "Rate % (LOAN only, optional)", key: "rate", width: 22 },
+    { header: "Remaining Months (LOAN only, optional)", key: "duration", width: 28 },
+    { header: "Repayment Type (FLAT/REDUCING, LOAN only, optional)", key: "type", width: 32 },
+    { header: "Loan Start Month (YYYY-MM-DD, LOAN only, optional)", key: "start", width: 28 },
   ];
   ws.getRow(1).font = { bold: true };
   ws.addRow({ id: "MEM-000001", name: "John Doe", code: "SAVINGS", amount: 150000 });
   ws.addRow({ id: "MEM-000001", name: "John Doe", code: "LOAN", amount: 0 });
+  ws.addRow({
+    id: "MEM-000002",
+    name: "Jane Example",
+    code: "LOAN",
+    amount: 80000,
+    rate: 10,
+    duration: 8,
+    type: "FLAT",
+    start: "2026-01-01",
+  });
   const buf = await wb.xlsx.writeBuffer();
   return Buffer.from(buf);
 }
@@ -48,8 +64,11 @@ export interface BalanceImportResult {
  * the member's opening balance for that code (not additive) — re-uploading a corrected file is
  * how you fix a mistake, matching how a one-time migration import is normally used.
  */
-export async function importBalances(ctx: Ctx, fileName: string, buffer: Buffer): Promise<BalanceImportResult> {
+export async function importBalances(ctx: Ctx, fileName: string, buffer: Buffer, asOfDate: string): Promise<BalanceImportResult> {
   requirePerm(ctx);
+  if (!asOfDate || Number.isNaN(new Date(asOfDate).getTime())) {
+    throw new Error("The period these balances are as-of is required and must be a valid date.");
+  }
 
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buffer as unknown as ExcelJS.Buffer);
@@ -64,6 +83,10 @@ export async function importBalances(ctx: Ctx, fileName: string, buffer: Buffer)
   const nameCol = headers.findIndex((h) => h.includes("name"));
   const codeCol = headers.findIndex((h) => h.includes("code"));
   const amountCol = headers.findIndex((h) => h.includes("amount"));
+  const rateCol = headers.findIndex((h) => h.includes("rate"));
+  const durationCol = headers.findIndex((h) => h.includes("remaining months"));
+  const typeCol = headers.findIndex((h) => h.includes("repayment type"));
+  const startCol = headers.findIndex((h) => h.includes("start month"));
   if (idCol < 0 || codeCol < 0 || amountCol < 0) {
     throw new Error("Could not find the ID No, Code and Amount columns. Use the provided template.");
   }
@@ -93,6 +116,61 @@ export async function importBalances(ctx: Ctx, fileName: string, buffer: Buffer)
       if (!member) {
         status = "FAILED";
         message = `No member found with ID ${membershipNumber}.`;
+      } else if (
+        codeRaw === "LOAN" &&
+        rateCol >= 0 &&
+        durationCol >= 0 &&
+        startCol >= 0 &&
+        row.getCell(rateCol).value != null &&
+        row.getCell(durationCol).value != null &&
+        row.getCell(startCol).value != null
+      ) {
+        // Full term info given — bring this forward as its own loan (with its own repayment
+        // period) rather than folding it into the single opening-balance figure, so a member can
+        // carry several brought-forward loans with different terms, and any one of them can be
+        // corrected later via an Admin adjustment without touching the others.
+        const rate = Number(row.getCell(rateCol).value);
+        const months = Number(row.getCell(durationCol).value);
+        const typeRaw = String(row.getCell(typeCol >= 0 ? typeCol : -1).value ?? "FLAT").trim().toUpperCase();
+        const startRaw = String(row.getCell(startCol).value ?? "").trim();
+        const repaymentType: RepaymentType = typeRaw === "REDUCING" ? "REDUCING" : "FLAT";
+
+        if (!Number.isFinite(rate) || rate < 0) {
+          status = "FAILED";
+          message = "Rate % must be a non-negative number.";
+        } else if (!Number.isInteger(months) || months <= 0) {
+          status = "FAILED";
+          message = "Remaining Months must be a whole number greater than zero.";
+        } else if (!startRaw || Number.isNaN(new Date(startRaw).getTime())) {
+          status = "FAILED";
+          message = "Loan Start Month is missing or not a valid date.";
+        } else {
+          const startMonth = new Date(startRaw);
+          const calc = calcLoan(amount, rate, months, repaymentType);
+          await db.loan.create({
+            data: {
+              memberId: member.id,
+              loanAmount: round2(amount),
+              interestRate: rate,
+              repaymentType,
+              durationMonths: months,
+              startMonth,
+              endMonth: addMonths(startMonth, months - 1),
+              totalInterest: calc.totalInterest,
+              totalRepayment: calc.totalRepayment,
+              monthlyRepayment: calc.monthlyRepayment,
+              outstandingBalance: calc.totalRepayment,
+              status: "ACTIVE",
+              requestedById: ctx.userId,
+              approvedById: ctx.userId,
+              approvedAt: new Date(),
+              note: "Opening balance brought forward from manual records.",
+            },
+          });
+        }
+        if (fullNameInFile && fullNameInFile.toLowerCase() !== member.fullName.toLowerCase()) {
+          message = (message ? message + " " : "") + `Name in file ("${fullNameInFile}") differs from record ("${member.fullName}").`;
+        }
       } else {
         if (codeRaw === "SAVINGS") {
           await db.member.update({ where: { id: member.id }, data: { openingSavingsBalance: round2(amount) } });
@@ -115,6 +193,7 @@ export async function importBalances(ctx: Ctx, fileName: string, buffer: Buffer)
     data: {
       fileName,
       importedById: ctx.userId,
+      asOfDate: new Date(asOfDate),
       rows: {
         create: results.map((r) => ({
           rowNumber: r.rowNumber,

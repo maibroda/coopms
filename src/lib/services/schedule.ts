@@ -10,21 +10,27 @@ function requirePerm(ctx: Ctx, perm: "schedule.view" | "schedule.post") {
   if (!can(ctx.role, perm)) throw new ForbiddenError(perm);
 }
 
+const DEFERMENT_PENALTY_RATE = 0.10;
+
 export interface ScheduleRow {
   memberId: string;
   membershipNumber: string;
   fullName: string;
   department: string | null;
   savings: number;
+  /** Principal portion of this month's loan repayment, summed across all the member's loans. */
+  loanPrincipal: number;
+  /** Interest portion (including any deferment penalty) of this month's loan repayment. */
+  loanInterest: number;
   loanRepayment: number;
   total: number;
-  loanBreakdown: { loanId: string; amount: number }[];
+  loanBreakdown: { loanId: string; amount: number; principal: number; interest: number; penalty: number }[];
 }
 
 export interface SchedulePreview {
   month: Date;
   rows: ScheduleRow[];
-  totals: { savings: number; loanRepayment: number; total: number };
+  totals: { savings: number; loanPrincipal: number; loanInterest: number; loanRepayment: number; total: number };
   alreadyPosted: boolean;
 }
 
@@ -42,8 +48,10 @@ function isSuspended(loan: { suspendedFrom: Date | null; suspendedUntil: Date | 
  */
 export async function previewSchedule(ctx: Ctx, month: Date): Promise<SchedulePreview> {
   requirePerm(ctx, "schedule.view");
+  // EXTERNAL members have no payroll to deduct from — they always settle by direct payment, so
+  // they never appear on the deduction schedule regardless of what they owe.
   const members = await db.member.findMany({
-    where: { status: "ACTIVE", dateJoined: { lte: month } },
+    where: { status: "ACTIVE", memberType: "EMPLOYEE", dateJoined: { lte: month } },
     include: {
       loans: { where: { status: "ACTIVE" }, include: { _count: { select: { repayments: true } } } },
     },
@@ -52,17 +60,29 @@ export async function previewSchedule(ctx: Ctx, month: Date): Promise<SchedulePr
 
   const rows: ScheduleRow[] = members.map((m) => {
     const savings = num(m.monthlyContribution);
-    const loanBreakdown: { loanId: string; amount: number }[] = [];
+    const loanBreakdown: { loanId: string; amount: number; principal: number; interest: number; penalty: number }[] = [];
     let loanRepayment = 0;
+    let loanPrincipal = 0;
+    let loanInterest = 0;
     for (const loan of m.loans) {
       if (loan.startMonth.getTime() > month.getTime()) continue; // not disbursed yet
       if (isSuspended(loan, month)) continue;
       const paidCount = loan._count.repayments;
       if (paidCount >= loan.durationMonths) continue; // fully scheduled — should already be COMPLETED
       const calc = calcLoan(num(loan.loanAmount), num(loan.interestRate), loan.durationMonths, loan.repaymentType as RepaymentType);
-      const installment = calc.schedule[paidCount]?.installment ?? 0;
-      loanBreakdown.push({ loanId: loan.id, amount: installment });
+      const schedRow = calc.schedule[paidCount];
+      const baseInstallment = schedRow?.installment ?? 0;
+      // A pending deferment penalty (from a previous suspended month) lands on this installment.
+      // It's not principal and not "earned" interest, but it's grouped under the interest portion
+      // for the repayment split below — the dedicated penalty column still breaks it out on its own.
+      const penalty = loan.deferredInstallments > 0 ? round2(baseInstallment * DEFERMENT_PENALTY_RATE) : 0;
+      const installment = round2(baseInstallment + penalty);
+      const principal = schedRow?.principal ?? 0;
+      const interest = round2((schedRow?.interest ?? 0) + penalty);
+      loanBreakdown.push({ loanId: loan.id, amount: installment, principal, interest, penalty });
       loanRepayment = round2(loanRepayment + installment);
+      loanPrincipal = round2(loanPrincipal + principal);
+      loanInterest = round2(loanInterest + interest);
     }
     return {
       memberId: m.id,
@@ -70,6 +90,8 @@ export async function previewSchedule(ctx: Ctx, month: Date): Promise<SchedulePr
       fullName: m.fullName,
       department: m.department,
       savings,
+      loanPrincipal,
+      loanInterest,
       loanRepayment,
       total: round2(savings + loanRepayment),
       loanBreakdown,
@@ -83,6 +105,8 @@ export async function previewSchedule(ctx: Ctx, month: Date): Promise<SchedulePr
     rows,
     totals: {
       savings: sum(rows.map((r) => r.savings)),
+      loanPrincipal: sum(rows.map((r) => r.loanPrincipal)),
+      loanInterest: sum(rows.map((r) => r.loanInterest)),
       loanRepayment: sum(rows.map((r) => r.loanRepayment)),
       total: sum(rows.map((r) => r.total)),
     },
@@ -116,6 +140,16 @@ export async function postSchedule(ctx: Ctx, month: Date): Promise<SchedulePrevi
         const calc = calcLoan(num(loan.loanAmount), num(loan.interestRate), loan.durationMonths, loan.repaymentType as RepaymentType);
         const schedRow = calc.schedule[paidCount];
         if (!schedRow) continue;
+        // A pending deferment penalty is collected alongside this installment as an extra fee,
+        // not part of the loan's own amortization — `amount` stays the balance-affecting figure
+        // (reconciles with balanceAfter/outstandingBalance the same way every other repayment
+        // does), with the penalty broken out separately in penaltyAmount for reporting.
+        const penalty = loan.deferredInstallments > 0 ? round2(schedRow.installment * DEFERMENT_PENALTY_RATE) : 0;
+        // Decrement the loan's CURRENT balance by this installment, rather than resetting to the
+        // original fixed schedule's snapshot at this index — the current balance already reflects
+        // any manual repayments, admin corrections or early-payoff rebates applied since the loan
+        // was created, and resetting to the fixed schedule would silently discard all of that.
+        const newBalance = Math.max(0, round2(num(loan.outstandingBalance) - schedRow.installment));
         await tx.loanRepayment.create({
           data: {
             loanId: loan.id,
@@ -123,17 +157,31 @@ export async function postSchedule(ctx: Ctx, month: Date): Promise<SchedulePrevi
             amount: schedRow.installment,
             principal: schedRow.principal,
             interest: schedRow.interest,
-            balanceAfter: schedRow.balanceAfter,
+            penaltyAmount: penalty,
+            balanceAfter: newBalance,
             source: "PAYROLL",
           },
         });
         await tx.loan.update({
           where: { id: loan.id },
           data: {
-            outstandingBalance: schedRow.balanceAfter,
-            status: schedRow.balanceAfter <= 0 ? "COMPLETED" : loan.status,
+            outstandingBalance: newBalance,
+            status: newBalance <= 0 ? "COMPLETED" : loan.status,
+            deferredInstallments: penalty > 0 ? { decrement: 1 } : undefined,
           },
         });
+      }
+    }
+
+    // A loan suspended for this month just got deferred one more installment — that installment
+    // will carry the 10% penalty whenever it's eventually billed after the loan resumes.
+    const activeLoans = await tx.loan.findMany({
+      where: { status: "ACTIVE", startMonth: { lte: month } },
+      select: { id: true, suspendedFrom: true, suspendedUntil: true },
+    });
+    for (const loan of activeLoans) {
+      if (isSuspended(loan, month)) {
+        await tx.loan.update({ where: { id: loan.id }, data: { deferredInstallments: { increment: 1 } } });
       }
     }
 

@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import { createMember } from "./members";
+import { createMember, composeFullName } from "./members";
 import { logAudit } from "./auditLog";
 import type { Ctx } from "@/lib/auth/context";
 import { can, ForbiddenError } from "@/lib/auth/permissions";
@@ -10,7 +10,16 @@ function requirePerm(ctx: Ctx) {
 
 const COLUMNS = [
   { header: "ID No (blank = auto-generate)", key: "id" },
-  { header: "Full Name", key: "name" },
+  { header: "First Name", key: "first" },
+  { header: "Middle Name", key: "middle" },
+  { header: "Last Name", key: "last" },
+  { header: "Gender (MALE/FEMALE/OTHER)", key: "gender" },
+  { header: "Member Type (EMPLOYEE/EXTERNAL)", key: "memberType" },
+  { header: "Region", key: "region" },
+  { header: "House Address", key: "houseAddress" },
+  { header: "Next of Kin Name", key: "nokName" },
+  { header: "Next of Kin Address", key: "nokAddress" },
+  { header: "Next of Kin Phone", key: "nokPhone" },
   { header: "Department", key: "dept" },
   { header: "Employee Number", key: "emp" },
   { header: "Date Joined (YYYY-MM-DD)", key: "joined" },
@@ -24,6 +33,10 @@ const COLUMNS = [
   { header: "Bank Account Name", key: "acctName" },
 ];
 
+const REGION_VALUES = ["SOUTH_WEST", "LAGOS", "NORTH_CENTRAL", "NORTH_EAST", "SOUTH_SOUTH", "SOUTH_EAST"];
+const GENDER_VALUES = ["MALE", "FEMALE", "OTHER"];
+const MEMBER_TYPE_VALUES = ["EMPLOYEE", "EXTERNAL"];
+
 export async function generateMemberImportTemplate(): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("New Members");
@@ -31,7 +44,16 @@ export async function generateMemberImportTemplate(): Promise<Buffer> {
   ws.getRow(1).font = { bold: true };
   ws.addRow({
     id: "",
-    name: "Jane Example",
+    first: "Jane",
+    middle: "",
+    last: "Example",
+    gender: "FEMALE",
+    memberType: "EMPLOYEE",
+    region: "LAGOS",
+    houseAddress: "12 Example Street, Lagos",
+    nokName: "John Example",
+    nokAddress: "12 Example Street, Lagos",
+    nokPhone: "08030000001",
     dept: "Finance",
     emp: "EMP-9001",
     joined: "2026-01-01",
@@ -77,7 +99,16 @@ export async function importMembers(ctx: Ctx, fileName: string, buffer: Buffer):
 
   const headers = Array.from(ws.getRow(1).values as unknown[], (h) => String(h ?? "").trim().toLowerCase());
   const idCol = colIndex(headers, "id no");
-  const nameCol = colIndex(headers, "full name");
+  const firstCol = colIndex(headers, "first name");
+  const middleCol = colIndex(headers, "middle name");
+  const lastCol = colIndex(headers, "last name");
+  const genderCol = colIndex(headers, "gender");
+  const memberTypeCol = colIndex(headers, "member type");
+  const regionCol = colIndex(headers, "region");
+  const houseAddressCol = colIndex(headers, "house address");
+  const nokNameCol = colIndex(headers, "next of kin name");
+  const nokAddressCol = colIndex(headers, "next of kin address");
+  const nokPhoneCol = colIndex(headers, "next of kin phone");
   const deptCol = colIndex(headers, "department");
   const empCol = colIndex(headers, "employee");
   const joinedCol = colIndex(headers, "date joined");
@@ -90,8 +121,10 @@ export async function importMembers(ctx: Ctx, fileName: string, buffer: Buffer):
   const acctCol = colIndex(headers, "bank account number");
   const acctNameCol = colIndex(headers, "bank account name");
 
-  if (nameCol < 0 || joinedCol < 0 || mcCol < 0) {
-    throw new Error("Could not find the Full Name, Date Joined and Monthly Contribution columns. Use the provided template.");
+  if (firstCol < 0 || lastCol < 0 || joinedCol < 0 || mcCol < 0) {
+    throw new Error(
+      "Could not find the First Name, Last Name, Date Joined and Monthly Contribution columns. Use the provided template.",
+    );
   }
 
   const cell = (row: ExcelJS.Row, col: number) => (col >= 0 ? String(row.getCell(col).value ?? "").trim() : "");
@@ -104,22 +137,48 @@ export async function importMembers(ctx: Ctx, fileName: string, buffer: Buffer):
   const results: MemberImportRowResult[] = [];
   for (let r = 2; r <= ws.rowCount; r++) {
     const row = ws.getRow(r);
-    const fullName = cell(row, nameCol);
-    if (!fullName) continue;
+    const firstName = cell(row, firstCol);
+    const lastName = cell(row, lastCol);
+    if (!firstName && !lastName) continue;
 
     const membershipNumber = idCol >= 0 ? cell(row, idCol) : "";
     const dateJoined = cell(row, joinedCol);
+    const fullName = composeFullName(firstName, cell(row, middleCol) || null, lastName);
+    const gender = cell(row, genderCol).toUpperCase();
+    const region = cell(row, regionCol).toUpperCase().replace(/\s+/g, "_");
+    const memberType = (cell(row, memberTypeCol).toUpperCase() || "EMPLOYEE") as string;
     let status: "APPLIED" | "FAILED" = "APPLIED";
     let message: string | null = null;
 
-    if (!dateJoined || Number.isNaN(new Date(dateJoined).getTime())) {
+    const missing: string[] = [];
+    if (!firstName) missing.push("First Name");
+    if (!lastName) missing.push("Last Name");
+    if (!dateJoined || Number.isNaN(new Date(dateJoined).getTime())) missing.push("Date Joined (valid date)");
+    if (!GENDER_VALUES.includes(gender)) missing.push("Gender (MALE/FEMALE/OTHER)");
+    if (!REGION_VALUES.includes(region)) missing.push("Region");
+    if (!cell(row, houseAddressCol)) missing.push("House Address");
+    if (!cell(row, nokNameCol)) missing.push("Next of Kin Name");
+    if (!cell(row, nokAddressCol)) missing.push("Next of Kin Address");
+    if (!cell(row, nokPhoneCol)) missing.push("Next of Kin Phone");
+    if (!MEMBER_TYPE_VALUES.includes(memberType)) missing.push("Member Type (EMPLOYEE/EXTERNAL)");
+
+    if (missing.length > 0) {
       status = "FAILED";
-      message = "Date Joined is missing or not a valid date.";
+      message = `Missing or invalid: ${missing.join(", ")}.`;
     } else {
       try {
         const member = await createMember(ctx, {
           membershipNumber: membershipNumber || null,
-          fullName,
+          firstName,
+          middleName: cell(row, middleCol) || null,
+          lastName,
+          gender: gender as "MALE" | "FEMALE" | "OTHER",
+          houseAddress: cell(row, houseAddressCol),
+          region: region as "SOUTH_WEST" | "LAGOS" | "NORTH_CENTRAL" | "NORTH_EAST" | "SOUTH_SOUTH" | "SOUTH_EAST",
+          nextOfKinName: cell(row, nokNameCol),
+          nextOfKinAddress: cell(row, nokAddressCol),
+          nextOfKinPhone: cell(row, nokPhoneCol),
+          memberType: memberType as "EMPLOYEE" | "EXTERNAL",
           department: cell(row, deptCol) || null,
           employeeNumber: cell(row, empCol) || null,
           dateJoined,

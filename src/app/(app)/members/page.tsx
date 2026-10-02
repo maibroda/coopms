@@ -10,6 +10,15 @@ import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatusBadge } from "@/components/ui/badge";
 import { PaginationControls } from "@/components/pagination-controls";
 
+const REGION_LABELS: Record<string, string> = {
+  SOUTH_WEST: "South West",
+  LAGOS: "Lagos",
+  NORTH_CENTRAL: "North Central",
+  NORTH_EAST: "North East",
+  SOUTH_SOUTH: "South South",
+  SOUTH_EAST: "South East",
+};
+
 export default async function MembersPage({ searchParams }: { searchParams: Promise<{ q?: string; page?: string }> }) {
   const ctx = await requirePage("member.view");
   const { q, page: pageParam } = await searchParams;
@@ -53,7 +62,9 @@ export default async function MembersPage({ searchParams }: { searchParams: Prom
             <TR>
               <TH>Membership #</TH>
               <TH>Full name</TH>
+              <TH>Type</TH>
               <TH>Department</TH>
+              <TH>Region</TH>
               <TH>Date joined</TH>
               <TH>Monthly contribution</TH>
               <TH>Status</TH>
@@ -68,7 +79,9 @@ export default async function MembersPage({ searchParams }: { searchParams: Prom
                   </Link>
                 </TD>
                 <TD>{m.fullName}</TD>
+                <TD>{m.memberType === "EXTERNAL" ? "External" : "Employee"}</TD>
                 <TD>{m.department ?? "—"}</TD>
+                <TD>{REGION_LABELS[m.region] ?? m.region}</TD>
                 <TD>{fmtDate(m.dateJoined)}</TD>
                 <TD>{naira(m.monthlyContribution)}</TD>
                 <TD>
@@ -78,7 +91,7 @@ export default async function MembersPage({ searchParams }: { searchParams: Prom
             ))}
             {result.items.length === 0 && (
               <TR>
-                <TD colSpan={6} className="py-8 text-center text-muted-foreground">
+                <TD colSpan={8} className="py-8 text-center text-muted-foreground">
                   No members found.
                 </TD>
               </TR>

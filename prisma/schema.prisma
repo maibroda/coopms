@@ -25,6 +25,31 @@ enum MemberStatus {
   INACTIVE
 }
 
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+// Business-defined regional groupings used for savings/membership reporting — not a strict
+// geopolitical-zone mapping (e.g. Lagos is tracked separately from South West by design).
+enum Region {
+  SOUTH_WEST
+  LAGOS
+  NORTH_CENTRAL
+  NORTH_EAST
+  SOUTH_SOUTH
+  SOUTH_EAST
+}
+
+// EMPLOYEE members are staff of the sponsoring organization and appear on the payroll deduction
+// schedule. EXTERNAL members join independently, have no employeeNumber, and always settle loans
+// and purchases by direct/manual payment rather than payroll.
+enum MemberType {
+  EMPLOYEE
+  EXTERNAL
+}
+
 enum RepaymentType {
   FLAT
   REDUCING
@@ -96,7 +121,22 @@ model User {
 model Member {
   id                  String       @id @default(cuid())
   membershipNumber    String       @unique
+  // firstName/middleName/lastName are the fields of record, entered and edited directly.
+  // fullName is maintained by the application (never a raw form input) as their concatenation,
+  // kept purely so search/sort/display call sites don't need to know about the three-part split.
+  firstName           String
+  middleName          String?
+  lastName             String
   fullName            String
+  gender              Gender
+  houseAddress        String
+  region              Region
+  nextOfKinName       String
+  nextOfKinAddress    String
+  nextOfKinPhone      String
+  // EMPLOYEE (default) vs EXTERNAL — see MemberType. Existing/imported rows with no explicit
+  // type default to EMPLOYEE to preserve current payroll-deduction behavior.
+  memberType          MemberType   @default(EMPLOYEE)
   department          String?
   employeeNumber      String?
   dateJoined           DateTime
@@ -121,6 +161,7 @@ model Member {
   paymentClaims PaymentClaim[]
 
   @@index([status])
+  @@index([region])
 }
 
 model Contribution {
@@ -152,6 +193,12 @@ model Loan {
   status             LoanStatus    @default(ACTIVE)
   suspendedFrom      DateTime?     @db.Date
   suspendedUntil     DateTime?     @db.Date
+  // Counts calendar months deferred by a suspension window but not yet billed. Each time the
+  // deduction schedule skips this loan for a suspended month, this increments by one; each time
+  // an installment is actually billed while this is above zero, a 10% deferment penalty is added
+  // to that one installment and this decrements by one — so the penalty lands on exactly the
+  // installments that were pushed out by the deferment, not on every future payment.
+  deferredInstallments Int         @default(0)
   note               String?
   // Approval workflow: a member-submitted request starts PENDING with requestedById set;
   // an Admin/Treasurer sign-off (approvedById/approvedAt) moves it to ACTIVE, or REJECTED
@@ -189,6 +236,10 @@ model LoanRepayment {
   amount       Decimal         @db.Decimal(14, 2)
   principal    Decimal         @db.Decimal(14, 2)
   interest     Decimal         @db.Decimal(14, 2)
+  // 10% deferment penalty charged on an installment that was previously pushed out by a
+  // suspension — already included in `amount`, broken out here so reports can show loan-granted,
+  // interest and penalty charges separately instead of lumped together.
+  penaltyAmount Decimal        @default(0) @db.Decimal(14, 2)
   balanceAfter Decimal         @db.Decimal(14, 2)
   // PAYROLL rows come from posting the monthly deduction schedule (one per loan per month,
   // enforced by application logic rather than a DB constraint — see source-scoped lookups in
@@ -244,6 +295,12 @@ model ProductRepayment {
   sale         ProductSale @relation(fields: [saleId], references: [id])
   month        DateTime    @db.Date
   amount       Decimal     @db.Decimal(14, 2)
+  // Principal/interest split of `amount`, allocated in the same proportion as the sale's overall
+  // interest-to-total ratio (sales don't have a per-installment schedule the way loans do, since
+  // they're always paid by free-form direct payment) — lets interest income be reported
+  // separately from principal collected instead of lumped into one figure.
+  principal    Decimal     @default(0) @db.Decimal(14, 2)
+  interest     Decimal     @default(0) @db.Decimal(14, 2)
   balanceAfter Decimal     @db.Decimal(14, 2)
   reference    String?
   recordedById String?
@@ -272,6 +329,9 @@ model BalanceImport {
   id           String             @id @default(cuid())
   fileName     String
   importedById String
+  // The period these balances are as-of (e.g. "balances as at 31 Dec 2025") — distinct from
+  // createdAt, which is just when the upload happened, possibly much later.
+  asOfDate     DateTime           @db.Date
   createdAt    DateTime           @default(now())
   rows         BalanceImportRow[]
 }

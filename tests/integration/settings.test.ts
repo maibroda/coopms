@@ -30,7 +30,14 @@ describe("configurable loan eligibility multiplier", () => {
     adminCtx = { userId: admin.id, role: "ADMIN", name: admin.name, email: admin.email };
 
     const member = await createMember(adminCtx, {
-      fullName: "Multiplier Test Member",
+      firstName: "Multiplier",
+      lastName: "Test Member",
+      gender: "OTHER",
+      houseAddress: "Test address",
+      region: "LAGOS",
+      nextOfKinName: "Test Kin",
+      nextOfKinAddress: "Test address",
+      nextOfKinPhone: "08000000000",
       dateJoined: "2026-01-01",
       monthlyContribution: 5000,
       openingSavingsBalance: 100000,

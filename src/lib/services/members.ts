@@ -8,7 +8,16 @@ import { ForbiddenError } from "@/lib/auth/permissions";
 
 export interface MemberInput {
   membershipNumber?: string | null; // blank => auto-generate
-  fullName: string;
+  firstName: string;
+  middleName?: string | null;
+  lastName: string;
+  gender: "MALE" | "FEMALE" | "OTHER";
+  houseAddress: string;
+  region: "SOUTH_WEST" | "LAGOS" | "NORTH_CENTRAL" | "NORTH_EAST" | "SOUTH_SOUTH" | "SOUTH_EAST";
+  nextOfKinName: string;
+  nextOfKinAddress: string;
+  nextOfKinPhone: string;
+  memberType?: "EMPLOYEE" | "EXTERNAL";
   department?: string | null;
   employeeNumber?: string | null;
   dateJoined: string; // ISO date
@@ -20,6 +29,12 @@ export interface MemberInput {
   bankName?: string | null;
   bankAccountNumber?: string | null;
   bankAccountName?: string | null;
+}
+
+/** fullName is never a raw input — it's always derived from the three name parts, kept on the
+ * row purely so search/sort/display call sites don't need to know about the split. */
+export function composeFullName(firstName: string, middleName: string | null | undefined, lastName: string): string {
+  return [firstName, middleName, lastName].filter((p) => p && p.trim()).join(" ");
 }
 
 async function nextMembershipNumber(): Promise<string> {
@@ -46,7 +61,17 @@ export async function createMember(ctx: Ctx, input: MemberInput) {
   return db.member.create({
     data: {
       membershipNumber,
-      fullName: input.fullName,
+      firstName: input.firstName,
+      middleName: input.middleName || null,
+      lastName: input.lastName,
+      fullName: composeFullName(input.firstName, input.middleName, input.lastName),
+      gender: input.gender,
+      houseAddress: input.houseAddress,
+      region: input.region,
+      nextOfKinName: input.nextOfKinName,
+      nextOfKinAddress: input.nextOfKinAddress,
+      nextOfKinPhone: input.nextOfKinPhone,
+      memberType: input.memberType ?? "EMPLOYEE",
       department: input.department || null,
       employeeNumber: input.employeeNumber || null,
       dateJoined: new Date(input.dateJoined),
@@ -81,7 +106,17 @@ export async function updateMember(ctx: Ctx, id: string, input: MemberInput) {
   return db.member.update({
     where: { id },
     data: {
-      fullName: input.fullName,
+      firstName: input.firstName,
+      middleName: input.middleName || null,
+      lastName: input.lastName,
+      fullName: composeFullName(input.firstName, input.middleName, input.lastName),
+      gender: input.gender,
+      houseAddress: input.houseAddress,
+      region: input.region,
+      nextOfKinName: input.nextOfKinName,
+      nextOfKinAddress: input.nextOfKinAddress,
+      nextOfKinPhone: input.nextOfKinPhone,
+      memberType: input.memberType ?? "EMPLOYEE",
       department: input.department || null,
       employeeNumber: input.employeeNumber || null,
       dateJoined: new Date(input.dateJoined),
@@ -225,7 +260,11 @@ export async function memberSummary(ctx: Ctx, memberId: string) {
 export interface LedgerRow {
   month: Date;
   savingsIn: number;
-  loanDisbursed: number;
+  /** Principal only — the actual amount lent out, not including interest. */
+  loanGranted: number;
+  /** Interest portion of loans granted this month, shown separately so it's never lumped in
+   * with the principal figure above. */
+  loanInterestGranted: number;
   loanRepayment: number;
   savingsBalance: number;
   loanBalance: number;
@@ -251,17 +290,20 @@ export async function memberLedger(memberId: string): Promise<MemberLedger> {
     // PENDING/REJECTED loans were never actually disbursed, so they don't belong in the ledger.
     db.loan.findMany({
       where: { memberId, status: { notIn: ["PENDING", "REJECTED"] } },
-      select: { startMonth: true, totalRepayment: true },
+      select: { startMonth: true, loanAmount: true, totalInterest: true },
     }),
     db.loanRepayment.findMany({ where: { loan: { memberId } }, select: { month: true, amount: true } }),
   ]);
 
-  const byMonth = new Map<number, { month: Date; savingsIn: number; loanDisbursed: number; loanRepayment: number }>();
+  const byMonth = new Map<
+    number,
+    { month: Date; savingsIn: number; loanGranted: number; loanInterestGranted: number; loanRepayment: number }
+  >();
   function bucket(month: Date) {
     const key = month.getTime();
     let b = byMonth.get(key);
     if (!b) {
-      b = { month, savingsIn: 0, loanDisbursed: 0, loanRepayment: 0 };
+      b = { month, savingsIn: 0, loanGranted: 0, loanInterestGranted: 0, loanRepayment: 0 };
       byMonth.set(key, b);
     }
     return b;
@@ -272,9 +314,8 @@ export async function memberLedger(memberId: string): Promise<MemberLedger> {
   }
   for (const l of loans) {
     const b = bucket(l.startMonth);
-    // Recorded at the full repayable amount (principal + interest) so the running loan balance
-    // reconciles exactly with Loan.outstandingBalance once repayments (also principal + interest) are subtracted.
-    b.loanDisbursed = round2(b.loanDisbursed + num(l.totalRepayment));
+    b.loanGranted = round2(b.loanGranted + num(l.loanAmount));
+    b.loanInterestGranted = round2(b.loanInterestGranted + num(l.totalInterest));
   }
   for (const r of repayments) {
     const b = bucket(r.month);
@@ -287,11 +328,15 @@ export async function memberLedger(memberId: string): Promise<MemberLedger> {
   let loanBalance = num(member.openingLoanBalance);
   const rows: LedgerRow[] = months.map((m) => {
     savingsBalance = round2(savingsBalance + m.savingsIn);
-    loanBalance = round2(loanBalance + m.loanDisbursed - m.loanRepayment);
+    // The running balance reconciles against Loan.outstandingBalance, which is the full
+    // principal + interest obligation — so the balance math still adds principal + interest
+    // together here, even though loanGranted/loanInterestGranted are reported separately above.
+    loanBalance = round2(loanBalance + m.loanGranted + m.loanInterestGranted - m.loanRepayment);
     return {
       month: m.month,
       savingsIn: m.savingsIn,
-      loanDisbursed: m.loanDisbursed,
+      loanGranted: m.loanGranted,
+      loanInterestGranted: m.loanInterestGranted,
       loanRepayment: m.loanRepayment,
       savingsBalance,
       loanBalance,

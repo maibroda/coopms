@@ -7,7 +7,16 @@ type V = Record<string, unknown>;
 function toInput(v: V): svc.MemberInput {
   return {
     membershipNumber: v.membershipNumber ? String(v.membershipNumber) : null,
-    fullName: String(v.fullName ?? ""),
+    firstName: String(v.firstName ?? ""),
+    middleName: v.middleName ? String(v.middleName) : null,
+    lastName: String(v.lastName ?? ""),
+    gender: String(v.gender ?? "MALE") as svc.MemberInput["gender"],
+    houseAddress: String(v.houseAddress ?? ""),
+    region: String(v.region ?? "LAGOS") as svc.MemberInput["region"],
+    nextOfKinName: String(v.nextOfKinName ?? ""),
+    nextOfKinAddress: String(v.nextOfKinAddress ?? ""),
+    nextOfKinPhone: String(v.nextOfKinPhone ?? ""),
+    memberType: String(v.memberType ?? "EMPLOYEE") as svc.MemberInput["memberType"],
     department: v.department ? String(v.department) : null,
     employeeNumber: v.employeeNumber ? String(v.employeeNumber) : null,
     dateJoined: String(v.dateJoined ?? ""),

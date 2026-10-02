@@ -70,7 +70,20 @@ export default async function LoansPage({ searchParams }: { searchParams: Promis
                 </TD>
                 {canManage && (
                   <TD>
-                    <LoanRowActions loanId={l.id} memberId={l.memberId} suspended={!!l.suspendedUntil} status={l.status} />
+                    <LoanRowActions
+                      loanId={l.id}
+                      memberId={l.memberId}
+                      suspended={!!l.suspendedUntil}
+                      status={l.status}
+                      isAdmin={ctx.role === "ADMIN"}
+                      current={{
+                        loanAmount: Number(l.loanAmount),
+                        interestRate: Number(l.interestRate),
+                        durationMonths: l.durationMonths,
+                        repaymentType: l.repaymentType,
+                        startMonth: l.startMonth.toISOString().slice(0, 7),
+                      }}
+                    />
                   </TD>
                 )}
               </TR>

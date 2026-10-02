@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { num, round2, sum } from "@/lib/money";
-import { addMonths, monthStart } from "@/lib/dates";
+import { addMonths, monthStart, monthsBetween } from "@/lib/dates";
 import { calcLoan, type RepaymentType } from "@/lib/calc";
 import { totalSavings } from "./members";
 import { logAudit } from "./auditLog";
@@ -34,13 +34,22 @@ export interface EligibilityResult {
   currentOutstandingPrincipal: number;
   availableToBorrow: number;
   eligible: boolean;
+  /** True when the member hasn't yet completed the minimum tenure to borrow (still eligible to
+   * buy on credit via product sales — this restriction is loans-only). */
+  tooNewToBorrow: boolean;
 }
+
+const MIN_MONTHS_BEFORE_BORROWING = 6;
 
 /**
  * A member may not owe (across active AND pending loans, principal terms) more than the
  * cooperative's configured eligibility multiplier (Admin-editable in Settings; 150% by
  * default) times their savings. Pending loans count too, so a member can't get around the cap
  * by stacking several requests before any of them is approved.
+ *
+ * A member also can't borrow at all until they've been a member for at least 6 months — new
+ * joiners can still buy on credit via product sales, which has its own separate eligibility
+ * check that doesn't apply this tenure restriction.
  */
 export async function checkLoanEligibility(memberId: string, requestedAmount = 0): Promise<EligibilityResult> {
   const [savings, settings] = await Promise.all([totalSavings(memberId), getCachedSettings()]);
@@ -52,12 +61,14 @@ export async function checkLoanEligibility(memberId: string, requestedAmount = 0
   const currentOutstandingPrincipal = sum([num(member.openingLoanBalance), ...openLoans.map((l) => num(l.loanAmount))]);
   const maxBorrowable = round2(savings * settings.loanEligibilityMultiplier);
   const availableToBorrow = Math.max(round2(maxBorrowable - currentOutstandingPrincipal), 0);
+  const tooNewToBorrow = monthsBetween(member.dateJoined, new Date()) < MIN_MONTHS_BEFORE_BORROWING;
   return {
     totalSavings: savings,
     maxBorrowable,
     currentOutstandingPrincipal,
     availableToBorrow,
-    eligible: requestedAmount <= availableToBorrow,
+    eligible: !tooNewToBorrow && requestedAmount <= availableToBorrow,
+    tooNewToBorrow,
   };
 }
 
@@ -92,6 +103,14 @@ function buildLoanData(input: LoanInput) {
 async function resolveEligibility(input: LoanInput): Promise<{ isException: boolean }> {
   const eligibility = await checkLoanEligibility(input.memberId, input.loanAmount);
   if (eligibility.eligible) return { isException: false };
+  // Hard rule, no exception path — a member under 6 months' tenure can't borrow at all yet,
+  // regardless of how small the request or how strong the reason given.
+  if (eligibility.tooNewToBorrow) {
+    throw new Error(
+      `Loan declined: this member joined less than ${MIN_MONTHS_BEFORE_BORROWING} months ago and isn't yet eligible to borrow. ` +
+        `They can still make purchases on credit in the meantime.`,
+    );
+  }
   if (!input.exceptionReason?.trim()) {
     throw new Error(
       `Loan declined: member can borrow at most ₦${eligibility.availableToBorrow.toLocaleString()} ` +
@@ -254,6 +273,173 @@ export async function restructureLoan(
   return newLoan;
 }
 
+/**
+ * Admin-only direct correction of an applied loan's terms — unlike restructureLoan (which
+ * creates a brand-new loan under new terms for genuinely renegotiated debt), this is an in-place
+ * fix for a loan whose amount/rate/duration/start was simply entered wrong. Recomputes the full
+ * amortization from the corrected terms, then nets off whatever has already been repaid so the
+ * member isn't charged twice for payments already collected. Skips the eligibility cap for the
+ * same reason restructuring does — this corrects a record, it isn't a new lending decision.
+ */
+export async function adjustLoan(
+  ctx: Ctx,
+  loanId: string,
+  newTerms: { loanAmount: number; interestRate: number; durationMonths: number; repaymentType: RepaymentType; startMonth: string },
+) {
+  if (ctx.role !== "ADMIN") throw new ForbiddenError("loan.manage");
+  const loan = await db.loan.findUniqueOrThrow({ where: { id: loanId } });
+  if (loan.status !== "ACTIVE" && loan.status !== "PENDING") {
+    throw new Error("Only active or pending loans can be adjusted — restructure a completed/defaulted loan instead if needed.");
+  }
+
+  const paidAgg = await db.loanRepayment.aggregate({ where: { loanId }, _sum: { amount: true } });
+  const totalPaid = num(paidAgg._sum.amount ?? 0);
+
+  const data = buildLoanData({
+    memberId: loan.memberId,
+    loanAmount: newTerms.loanAmount,
+    interestRate: newTerms.interestRate,
+    durationMonths: newTerms.durationMonths,
+    repaymentType: newTerms.repaymentType,
+    startMonth: newTerms.startMonth,
+    note: loan.note,
+  });
+  const newOutstanding = Math.max(round2(data.totalRepayment - totalPaid), 0);
+
+  const updated = await db.loan.update({
+    where: { id: loanId },
+    data: { ...data, outstandingBalance: newOutstanding, status: newOutstanding <= 0 ? "COMPLETED" : loan.status },
+  });
+
+  await logAudit(ctx, {
+    action: "LOAN_ADMIN_ADJUSTED",
+    entityType: "Loan",
+    entityId: loanId,
+    before: {
+      loanAmount: loan.loanAmount,
+      interestRate: loan.interestRate,
+      durationMonths: loan.durationMonths,
+      outstandingBalance: loan.outstandingBalance,
+    },
+    after: {
+      loanAmount: updated.loanAmount,
+      interestRate: updated.interestRate,
+      durationMonths: updated.durationMonths,
+      outstandingBalance: updated.outstandingBalance,
+    },
+  });
+  return updated;
+}
+
+/**
+ * Recomputes what's actually owed today for a loan being part-paid or fully liquidated before
+ * its term ends: full remaining principal, plus interest only for periods that have actually
+ * elapsed — any interest that would have accrued on periods still in the future is rebated. Pure
+ * recompute; it only adjusts outstandingBalance, it doesn't collect a payment — follow up with
+ * recordManualLoanRepayment for the actual collection against the corrected figure.
+ */
+export async function recomputeEarlyPayoff(ctx: Ctx, loanId: string, asOfDate?: string) {
+  requirePerm(ctx, "loan.manage");
+  const loan = await db.loan.findUniqueOrThrow({ where: { id: loanId } });
+  if (loan.status !== "ACTIVE") throw new Error("Only active loans can be recomputed for early payoff.");
+
+  const asOf = asOfDate ? new Date(asOfDate) : new Date();
+  const elapsedMonths = Math.min(
+    Math.max(monthsBetween(loan.startMonth, asOf) + 1, 0),
+    loan.durationMonths,
+  );
+
+  const calc = calcLoan(num(loan.loanAmount), num(loan.interestRate), loan.durationMonths, loan.repaymentType as RepaymentType);
+  const totalPrincipal = round2(calc.schedule.reduce((a, r) => a + r.principal, 0));
+  const interestAccrued = round2(calc.schedule.slice(0, elapsedMonths).reduce((a, r) => a + r.interest, 0));
+  const fairObligation = round2(totalPrincipal + interestAccrued);
+
+  const paidAgg = await db.loanRepayment.aggregate({ where: { loanId }, _sum: { amount: true } });
+  const totalPaid = num(paidAgg._sum.amount ?? 0);
+  const newOutstanding = Math.max(round2(fairObligation - totalPaid), 0);
+
+  if (newOutstanding >= num(loan.outstandingBalance)) {
+    throw new Error("No early-payoff rebate applies — the loan's current balance already reflects interest accrued to date.");
+  }
+
+  const updated = await db.loan.update({ where: { id: loanId }, data: { outstandingBalance: newOutstanding } });
+  await logAudit(ctx, {
+    action: "LOAN_EARLY_PAYOFF_RECOMPUTED",
+    entityType: "Loan",
+    entityId: loanId,
+    before: { outstandingBalance: loan.outstandingBalance },
+    after: { outstandingBalance: newOutstanding, elapsedMonths, interestAccrued, totalPrincipal },
+  });
+  return updated;
+}
+
+export type LoanAgeBucket = "CURRENT" | "DAYS_1_30" | "DAYS_31_60" | "DAYS_61_90" | "DAYS_90_PLUS";
+
+export interface LoanAgeRow {
+  loanId: string;
+  memberId: string;
+  memberName: string;
+  outstandingBalance: number;
+  daysOverdue: number;
+  bucket: LoanAgeBucket;
+}
+
+export interface LoanAgeAnalysis {
+  rows: LoanAgeRow[];
+  totals: Record<LoanAgeBucket, number>;
+  counts: Record<LoanAgeBucket, number>;
+}
+
+function bucketForDays(days: number): LoanAgeBucket {
+  if (days <= 0) return "CURRENT";
+  if (days <= 30) return "DAYS_1_30";
+  if (days <= 60) return "DAYS_31_60";
+  if (days <= 90) return "DAYS_61_90";
+  return "DAYS_90_PLUS";
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Ages every active loan by how overdue it is — days since the due date of the oldest
+ * installment that hasn't been collected yet, based on installments actually posted so far
+ * (same "deferred, not forgiven" model the schedule itself uses). A loan currently within its
+ * suspension window is deliberately deferred, not delinquent, so it's always CURRENT regardless
+ * of how much calendar time has passed.
+ */
+export async function getLoanAgeAnalysis(ctx: Ctx): Promise<LoanAgeAnalysis> {
+  requirePerm(ctx, "loan.view");
+  const today = new Date();
+  const loans = await db.loan.findMany({
+    where: { status: "ACTIVE" },
+    include: { _count: { select: { repayments: true } }, member: { select: { id: true, fullName: true } } },
+  });
+
+  const rows: LoanAgeRow[] = loans.map((loan) => {
+    const suspended = !!loan.suspendedFrom && !!loan.suspendedUntil && loan.suspendedFrom <= today && today < loan.suspendedUntil;
+    const nextDueDate = addMonths(loan.startMonth, loan._count.repayments);
+    const daysOverdue = suspended || nextDueDate > today ? 0 : Math.floor((today.getTime() - nextDueDate.getTime()) / MS_PER_DAY);
+    return {
+      loanId: loan.id,
+      memberId: loan.member.id,
+      memberName: loan.member.fullName,
+      outstandingBalance: num(loan.outstandingBalance),
+      daysOverdue,
+      bucket: bucketForDays(daysOverdue),
+    };
+  });
+
+  const buckets: LoanAgeBucket[] = ["CURRENT", "DAYS_1_30", "DAYS_31_60", "DAYS_61_90", "DAYS_90_PLUS"];
+  const totals = Object.fromEntries(buckets.map((b) => [b, 0])) as Record<LoanAgeBucket, number>;
+  const counts = Object.fromEntries(buckets.map((b) => [b, 0])) as Record<LoanAgeBucket, number>;
+  for (const row of rows) {
+    totals[row.bucket] = round2(totals[row.bucket] + row.outstandingBalance);
+    counts[row.bucket] += 1;
+  }
+
+  return { rows, totals, counts };
+}
+
 export async function listLoans(ctx: Ctx, opts: { memberId?: string; status?: string } = {}) {
   requirePerm(ctx, "loan.view");
   return db.loan.findMany({
@@ -303,6 +489,11 @@ export async function markLoanStatus(ctx: Ctx, loanId: string, status: "DEFAULTE
  * whatever interest was still scheduled on periods that now never happen, which is the correct
  * outcome for both FLAT and REDUCING loans since outstandingBalance already represents the
  * full remaining obligation, not just principal.
+ *
+ * Like sales' direct payments, this has no fixed per-installment schedule to allocate against
+ * (it's any amount, any time), so the interest portion is allocated proportionally to the loan's
+ * overall interest-to-total ratio, capped at whatever interest hasn't been recognized yet — this
+ * is what feeds the loan interest income reports instead of understating them as 0.
  */
 export async function recordManualLoanRepayment(
   ctx: Ctx,
@@ -318,14 +509,21 @@ export async function recordManualLoanRepayment(
   const balanceAfter = round2(num(loan.outstandingBalance) - applied);
   const month = monthStart(new Date(input.paidOn).getUTCFullYear(), new Date(input.paidOn).getUTCMonth() + 1);
 
+  const priorInterestAgg = await db.loanRepayment.aggregate({ where: { loanId }, _sum: { interest: true } });
+  const priorInterest = num(priorInterestAgg._sum.interest ?? 0);
+  const remainingInterest = Math.max(round2(num(loan.totalInterest) - priorInterest), 0);
+  const proportionalInterest = round2(applied * (num(loan.totalInterest) / num(loan.totalRepayment)));
+  const interestPortion = Math.min(proportionalInterest, remainingInterest, applied);
+  const principalPortion = round2(applied - interestPortion);
+
   const [repayment] = await db.$transaction([
     db.loanRepayment.create({
       data: {
         loanId,
         month,
         amount: applied,
-        principal: applied,
-        interest: 0,
+        principal: principalPortion,
+        interest: interestPortion,
         balanceAfter,
         source: "MANUAL",
         reference: input.reference || null,

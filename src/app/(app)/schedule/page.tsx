@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Table, THead, TBody, TFoot, TR, TH, TD } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { PostScheduleButton } from "@/components/forms/post-schedule-button";
+import { MonthDropdown } from "@/components/month-dropdown";
 
 export default async function SchedulePage({ searchParams }: { searchParams: Promise<{ month?: string }> }) {
   const ctx = await requirePage("schedule.view");
@@ -29,7 +30,7 @@ export default async function SchedulePage({ searchParams }: { searchParams: Pro
         <form className="flex items-end gap-2">
           <div className="space-y-1">
             <label className="text-xs font-medium text-foreground/80">Month</label>
-            <input name="month" type="month" defaultValue={monthInput} className="h-9 rounded-md border border-input bg-card px-3 text-sm" />
+            <MonthDropdown name="month" defaultValue={monthInput} />
           </div>
           <Button variant="outline" type="submit">
             View
@@ -66,24 +67,33 @@ export default async function SchedulePage({ searchParams }: { searchParams: Pro
               <TH>Member</TH>
               <TH>Department</TH>
               <TH>Savings (₦)</TH>
-              <TH>Loan Repayment (₦)</TH>
+              <TH>Loan Repayment — Principal (₦)</TH>
+              <TH>Loan Repayment — Interest (₦)</TH>
+              <TH>Of which deferment penalty (₦)</TH>
               <TH>Total Deduction (₦)</TH>
             </TR>
           </THead>
           <TBody>
-            {preview.rows.map((r) => (
-              <TR key={r.memberId}>
-                <TD>{r.membershipNumber}</TD>
-                <TD>{r.fullName}</TD>
-                <TD>{r.department ?? "—"}</TD>
-                <TD>{naira(r.savings)}</TD>
-                <TD>{naira(r.loanRepayment)}</TD>
-                <TD className="font-medium">{naira(r.total)}</TD>
-              </TR>
-            ))}
+            {preview.rows.map((r) => {
+              const penalty = r.loanBreakdown.reduce((a, lb) => a + lb.penalty, 0);
+              return (
+                <TR key={r.memberId}>
+                  <TD>{r.membershipNumber}</TD>
+                  <TD>{r.fullName}</TD>
+                  <TD>{r.department ?? "—"}</TD>
+                  <TD>{naira(r.savings)}</TD>
+                  <TD>{r.loanPrincipal ? naira(r.loanPrincipal) : "—"}</TD>
+                  <TD>{r.loanInterest ? naira(r.loanInterest) : "—"}</TD>
+                  <TD className={penalty > 0 ? "font-medium text-destructive" : "text-muted-foreground"}>
+                    {penalty > 0 ? naira(penalty) : "—"}
+                  </TD>
+                  <TD className="font-medium">{naira(r.total)}</TD>
+                </TR>
+              );
+            })}
             {preview.rows.length === 0 && (
               <TR>
-                <TD colSpan={6} className="py-8 text-center text-muted-foreground">
+                <TD colSpan={8} className="py-8 text-center text-muted-foreground">
                   No active members due for deduction this month.
                 </TD>
               </TR>
@@ -93,7 +103,9 @@ export default async function SchedulePage({ searchParams }: { searchParams: Pro
             <TR>
               <TD colSpan={3}>Total</TD>
               <TD>{naira(preview.totals.savings)}</TD>
-              <TD>{naira(preview.totals.loanRepayment)}</TD>
+              <TD>{naira(preview.totals.loanPrincipal)}</TD>
+              <TD>{naira(preview.totals.loanInterest)}</TD>
+              <TD>{naira(preview.rows.reduce((a, r) => a + r.loanBreakdown.reduce((b, lb) => b + lb.penalty, 0), 0))}</TD>
               <TD>{naira(preview.totals.total)}</TD>
             </TR>
           </TFoot>

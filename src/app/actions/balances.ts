@@ -9,11 +9,12 @@ export async function importBalancesAction(
 ): Promise<{ error?: string; result?: BalanceImportResult }> {
   const file = form.get("file");
   if (!(file instanceof File) || file.size === 0) return { error: "Choose an .xlsx file to upload." };
+  const asOfDate = String(form.get("asOfDate") ?? "");
 
   try {
     const ctx = await requireAction("member.manage");
     const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await importBalances(ctx, file.name, buffer);
+    const result = await importBalances(ctx, file.name, buffer, asOfDate);
     revalidatePath("/members", "layout");
     return { result };
   } catch (e) {

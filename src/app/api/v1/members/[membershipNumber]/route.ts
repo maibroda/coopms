@@ -30,7 +30,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ memb
     statement: ledger.rows.map((r) => ({
       month: iso(r.month),
       savingsIn: r.savingsIn,
-      loanGranted: r.loanDisbursed,
+      loanGranted: r.loanGranted,
+      loanInterestGranted: r.loanInterestGranted,
       loanRepayment: r.loanRepayment,
       savingsBalance: r.savingsBalance,
       loanBalance: r.loanBalance,

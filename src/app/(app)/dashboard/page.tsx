@@ -1,11 +1,20 @@
 import Link from "next/link";
 import { requirePage } from "@/lib/auth/session";
 import { db } from "@/lib/db";
-import { num, sum, naira } from "@/lib/money";
+import { num, sum, round2, naira } from "@/lib/money";
 import { monthStart, periodName } from "@/lib/dates";
+import { getLoanAgeAnalysis, type LoanAgeBucket } from "@/lib/services/loans";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DashboardCharts } from "@/components/dashboard-charts";
+
+const AGE_BUCKET_LABELS: Record<LoanAgeBucket, string> = {
+  CURRENT: "Current",
+  DAYS_1_30: "1–30 days",
+  DAYS_31_60: "31–60 days",
+  DAYS_61_90: "61–90 days",
+  DAYS_90_PLUS: "90+ days",
+};
 
 async function kpis() {
   const now = new Date();
@@ -28,7 +37,15 @@ async function kpis() {
         member: { select: { fullName: true } },
       },
     }),
-    db.productSale.findMany({ select: { cost: true, totalInterest: true, outstandingBalance: true, status: true } }),
+    db.productSale.findMany({
+      select: {
+        cost: true,
+        totalInterest: true,
+        outstandingBalance: true,
+        status: true,
+        repayments: { select: { principal: true, interest: true } },
+      },
+    }),
     db.loanRepayment.findMany({ select: { interest: true, amount: true } }),
   ]);
 
@@ -41,6 +58,21 @@ async function kpis() {
   const disbursedSales = sales.filter((s) => s.status !== "PENDING" && s.status !== "REJECTED");
   const totalLoansDisbursed = sum([openingLoans, ...disbursedLoans.map((l) => num(l.loanAmount))]);
   const outstandingLoans = sum(loans.filter((l) => l.status === "ACTIVE").map((l) => num(l.outstandingBalance)));
+  const activeSales = sales.filter((s) => s.status === "ACTIVE");
+  const outstandingSales = sum(activeSales.map((s) => num(s.outstandingBalance)));
+  // outstandingBalance = (cost - principal already repaid) + (totalInterest - interest already
+  // repaid) — split out here so "outstanding" is never a single lumped principal+interest figure,
+  // same treatment as loans. This is also why Outstanding Sales can exceed Total Sales: Total
+  // Sales is principal (cost) only, summed across every disbursed sale ever (including ones
+  // already fully paid off); Outstanding Sales adds markup interest on top, but only for sales
+  // still ACTIVE today — if little has been repaid on those yet, their interest-inclusive
+  // balance can outweigh the principal of everything that's already been settled.
+  const outstandingSalesPrincipal = sum(
+    activeSales.map((s) => round2(num(s.cost) - sum(s.repayments.map((r) => num(r.principal))))),
+  );
+  const outstandingSalesInterest = sum(
+    activeSales.map((s) => round2(num(s.totalInterest) - sum(s.repayments.map((r) => num(r.interest))))),
+  );
   const totalSalesValue = sum(disbursedSales.map((s) => num(s.cost)));
   const loanInterestEarned = sum(loanRepayments.map((r) => num(r.interest)));
   const totalRepaymentsCollected = sum(loanRepayments.map((r) => num(r.amount)));
@@ -60,6 +92,9 @@ async function kpis() {
     totalContributions,
     totalLoansDisbursed,
     outstandingLoans,
+    outstandingSales,
+    outstandingSalesPrincipal,
+    outstandingSalesInterest,
     totalSalesValue,
     loanInterestEarned,
     cashAvailable,
@@ -97,17 +132,22 @@ async function chartData() {
 }
 
 export default async function DashboardPage() {
-  await requirePage("dashboard.view");
-  const [k, charts] = await Promise.all([kpis(), chartData()]);
+  const ctx = await requirePage("dashboard.view");
+  const [k, charts, ageAnalysis] = await Promise.all([kpis(), chartData(), getLoanAgeAnalysis(ctx)]);
 
-  const stats = [
+  const stats: { label: string; value: string; note?: string }[] = [
     { label: "Total Members", value: k.memberCount.toLocaleString() },
     { label: "Total Contributions", value: naira(k.totalContributions) },
     { label: "Total Loans Disbursed", value: naira(k.totalLoansDisbursed) },
     { label: "Outstanding Loans", value: naira(k.outstandingLoans) },
-    { label: "Total Sales", value: naira(k.totalSalesValue) },
+    {
+      label: "Outstanding Sales",
+      value: naira(k.outstandingSales),
+      note: `Principal ${naira(k.outstandingSalesPrincipal)} + interest ${naira(k.outstandingSalesInterest)}`,
+    },
+    { label: "Total Sales", value: naira(k.totalSalesValue), note: "Principal (cost) only, all sales ever disbursed" },
     { label: "Loan Interest Income", value: naira(k.loanInterestEarned) },
-    { label: "Cash Available", value: naira(k.cashAvailable) },
+    { label: "Bank Balance", value: naira(k.cashAvailable) },
     { label: "Active Loans / Sales", value: `${k.activeLoanCount} / ${k.activeSaleCount}` },
   ];
 
@@ -124,12 +164,44 @@ export default async function DashboardPage() {
             <CardContent className="p-4">
               <p className="text-xs text-muted-foreground">{s.label}</p>
               <p className="mt-1 text-lg font-semibold">{s.value}</p>
+              {s.note && <p className="mt-1 text-xs text-muted-foreground">{s.note}</p>}
             </CardContent>
           </Card>
         ))}
       </div>
+      {k.outstandingSales > k.totalSalesValue && (
+        <p className="text-xs text-muted-foreground">
+          Outstanding Sales is higher than Total Sales because Total Sales counts principal only across every sale
+          ever disbursed, while Outstanding Sales adds markup interest on top for sales still active today — not a
+          data error.
+        </p>
+      )}
 
       <DashboardCharts {...charts} />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Outstanding loans by age</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Aged by days since the oldest uncollected installment was due. A loan currently within an approved
+            deferment window is always shown as Current.
+          </p>
+        </CardHeader>
+        <CardContent className="p-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            {(["CURRENT", "DAYS_1_30", "DAYS_31_60", "DAYS_61_90", "DAYS_90_PLUS"] as const).map((bucket) => (
+              <div
+                key={bucket}
+                className={`rounded-md border p-3 ${bucket === "DAYS_61_90" || bucket === "DAYS_90_PLUS" ? "border-destructive/30 bg-destructive/5" : "border-border"}`}
+              >
+                <p className="text-xs text-muted-foreground">{AGE_BUCKET_LABELS[bucket]}</p>
+                <p className="mt-1 text-sm font-semibold">{naira(ageAnalysis.totals[bucket])}</p>
+                <p className="text-xs text-muted-foreground">{ageAnalysis.counts[bucket]} loan(s)</p>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

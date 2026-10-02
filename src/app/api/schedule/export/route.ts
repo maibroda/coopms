@@ -16,17 +16,25 @@ export async function GET(req: NextRequest) {
   const month = fromMonthInput(monthInput);
   const preview = await previewSchedule(ctx, month);
 
-  const header = ["Membership Number", "Member", "Department", "Savings", "Loan Repayment", "Total Deduction"];
+  const header = ["Membership Number", "Member", "Department", "Savings", "Loan Repayment — Principal", "Loan Repayment — Interest", "Total Deduction"];
   const lines = [header.map(csvCell).join(",")];
   for (const r of preview.rows) {
     lines.push(
-      [r.membershipNumber, r.fullName, r.department ?? "", num(r.savings).toFixed(2), num(r.loanRepayment).toFixed(2), num(r.total).toFixed(2)]
+      [
+        r.membershipNumber,
+        r.fullName,
+        r.department ?? "",
+        num(r.savings).toFixed(2),
+        num(r.loanPrincipal).toFixed(2),
+        num(r.loanInterest).toFixed(2),
+        num(r.total).toFixed(2),
+      ]
         .map(csvCell)
         .join(","),
     );
   }
   lines.push(
-    ["", "", "Total", preview.totals.savings.toFixed(2), preview.totals.loanRepayment.toFixed(2), preview.totals.total.toFixed(2)]
+    ["", "", "Total", preview.totals.savings.toFixed(2), preview.totals.loanPrincipal.toFixed(2), preview.totals.loanInterest.toFixed(2), preview.totals.total.toFixed(2)]
       .map(csvCell)
       .join(","),
   );
