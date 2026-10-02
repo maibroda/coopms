@@ -1,13 +1,14 @@
 import Link from "next/link";
 import { requirePage } from "@/lib/auth/session";
 import { listSalesPaginated } from "@/lib/services/sales";
+import { getCachedSettings } from "@/lib/services/settings";
 import { naira } from "@/lib/money";
 import { periodName } from "@/lib/dates";
 import { parsePage, DEFAULT_PAGE_SIZE } from "@/lib/pagination";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
-import { StatusBadge } from "@/components/ui/badge";
+import { StatusBadge, Badge } from "@/components/ui/badge";
 import { SaleRowActions } from "@/components/forms/sale-row-actions";
 import { PaginationControls } from "@/components/pagination-controls";
 
@@ -15,14 +16,20 @@ export default async function SalesPage({ searchParams }: { searchParams: Promis
   const ctx = await requirePage("sale.view");
   const { page: pageParam } = await searchParams;
   const page = parsePage(pageParam);
-  const result = await listSalesPaginated(ctx, { page, pageSize: DEFAULT_PAGE_SIZE });
+  const [result, settings] = await Promise.all([
+    listSalesPaginated(ctx, { page, pageSize: DEFAULT_PAGE_SIZE }),
+    getCachedSettings(),
+  ]);
   const sales = result.items;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-xl font-semibold">Product Sales</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold">Product Sales</h1>
+            {settings.productSalesOpen ? <Badge tone="green">Open</Badge> : <Badge tone="gray">Closed</Badge>}
+          </div>
           <p className="text-sm text-muted-foreground">
             {result.total} purchase(s) on installment — settled outside the payroll deduction schedule.
           </p>

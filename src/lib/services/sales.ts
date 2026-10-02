@@ -4,12 +4,23 @@ import { addMonths, monthStart } from "@/lib/dates";
 import { calcProductSale } from "@/lib/calc";
 import { totalSavings } from "./members";
 import { logAudit } from "./auditLog";
+import { getCachedSettings } from "./settings";
 import { paginate, type Paginated } from "@/lib/pagination";
 import type { Ctx } from "@/lib/auth/context";
 import { can, ForbiddenError } from "@/lib/auth/permissions";
 
 function requirePerm(ctx: Ctx, perm: "sale.view" | "sale.manage" | "self.request" | "approvals.manage") {
   if (!can(ctx.role, perm)) throw new ForbiddenError(perm);
+}
+
+/** Product Sales runs as a seasonal campaign (e.g. the festive period) rather than year-round —
+ * Admin opens and closes the window in Organization Settings. Neither a member's purchase
+ * request nor a staff-created sale can go through while it's closed. */
+async function requireSalesWindowOpen() {
+  const settings = await getCachedSettings();
+  if (!settings.productSalesOpen) {
+    throw new Error("Product Sales is currently closed — new purchases aren't being accepted outside the sales period. Check back once it reopens.");
+  }
 }
 
 export interface SaleInput {
@@ -81,6 +92,7 @@ async function resolveEligibility(input: SaleInput): Promise<{ isException: bool
 /** Staff-facing purchase creation — same auto-approve-if-Admin rule as createLoan. */
 export async function createSale(ctx: Ctx, input: SaleInput) {
   requirePerm(ctx, "sale.manage");
+  await requireSalesWindowOpen();
   const { isException } = await resolveEligibility(input);
   const data = buildSaleData(input);
   const autoApprove = ctx.role === "ADMIN" && !isException;
@@ -107,6 +119,7 @@ export async function createSale(ctx: Ctx, input: SaleInput) {
 /** Member self-service purchase request — always lands PENDING for staff review. */
 export async function requestSale(ctx: Ctx, input: Omit<SaleInput, "memberId">) {
   requirePerm(ctx, "self.request");
+  await requireSalesWindowOpen();
   if (!ctx.memberId) throw new Error("Your account isn't linked to a membership record yet.");
   const full: SaleInput = { ...input, memberId: ctx.memberId };
   const { isException } = await resolveEligibility(full);

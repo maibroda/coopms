@@ -5,6 +5,7 @@ import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { SettingsForm } from "@/components/forms/settings-form";
 import { AddLoanProductForm, ToggleLoanProductButton } from "@/components/forms/loan-product-manager";
+import { ProductSalesToggle } from "@/components/forms/product-sales-toggle";
 
 export default async function OrganizationSettingsPage() {
   await requirePage("settings.manage");
@@ -20,6 +21,19 @@ export default async function OrganizationSettingsPage() {
       </div>
 
       <SettingsForm settings={settings} />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Product Sales window</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Product Sales runs as a seasonal campaign (e.g. the festive period), not year-round. While closed,
+            neither a member&apos;s purchase request nor a staff-created sale can go through.
+          </p>
+        </CardHeader>
+        <CardContent className="p-4">
+          <ProductSalesToggle open={settings.productSalesOpen} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

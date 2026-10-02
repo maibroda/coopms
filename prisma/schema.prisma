@@ -412,6 +412,10 @@ model CooperativeSettings {
   logoUrl                   String?
   currencySymbol            String   @default("₦")
   loanEligibilityMultiplier Decimal  @default(1.5) @db.Decimal(5, 2)
+  // Product Sales run as a seasonal campaign (e.g. the festive period), not year-round. While
+  // closed, neither a member's purchase request nor a staff-created sale can go through — an
+  // Admin opens the window manually when a sales period starts and closes it when it ends.
+  productSalesOpen          Boolean  @default(true)
   updatedById               String?
   updatedAt                 DateTime @updatedAt
 }

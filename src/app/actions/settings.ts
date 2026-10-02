@@ -46,3 +46,14 @@ export async function setLoanProductActiveAction(id: string, isActive: boolean) 
     ["/settings/organization"],
   );
 }
+
+export async function setProductSalesOpenAction(open: boolean) {
+  return act(
+    "settings.manage",
+    async (ctx) => {
+      await svc.setProductSalesOpen(ctx, open);
+      return { message: open ? "Product Sales is now open." : "Product Sales is now closed." };
+    },
+    ["/settings/organization", "/sales", "/sales/new", "/me", "/me/request-purchase", "/dashboard"],
+  );
+}

@@ -15,6 +15,7 @@ export interface Settings {
   logoUrl: string | null;
   currencySymbol: string;
   loanEligibilityMultiplier: number;
+  productSalesOpen: boolean;
 }
 
 /**
@@ -30,6 +31,7 @@ export async function getSettings(): Promise<Settings> {
     logoUrl: row.logoUrl,
     currencySymbol: row.currencySymbol,
     loanEligibilityMultiplier: num(row.loanEligibilityMultiplier),
+    productSalesOpen: row.productSalesOpen,
   };
 }
 
@@ -81,6 +83,32 @@ export async function updateSettings(
     entityId: row.id,
     before,
     after: { orgName: row.orgName, currencySymbol: row.currencySymbol, loanEligibilityMultiplier: num(row.loanEligibilityMultiplier) },
+  });
+  return row;
+}
+
+/**
+ * Opens or closes the Product Sales window — Admin-only, deliberately a one-click toggle
+ * separate from the general settings form since it's expected to be flipped at the start/end of
+ * each sales period (e.g. the festive season) rather than edited alongside org-wide policy.
+ * While closed, neither a member's purchase request nor a staff-created sale can go through.
+ */
+export async function setProductSalesOpen(ctx: Ctx, open: boolean) {
+  if (ctx.role !== "ADMIN") throw new ForbiddenError("settings.manage");
+  const before = await getSettings();
+  const row = await db.cooperativeSettings.upsert({
+    where: { id: before.id },
+    create: { productSalesOpen: open, updatedById: ctx.userId },
+    update: { productSalesOpen: open, updatedById: ctx.userId },
+  });
+  cached = null;
+
+  await logAudit(ctx, {
+    action: open ? "PRODUCT_SALES_OPENED" : "PRODUCT_SALES_CLOSED",
+    entityType: "CooperativeSettings",
+    entityId: row.id,
+    before: { productSalesOpen: before.productSalesOpen },
+    after: { productSalesOpen: row.productSalesOpen },
   });
   return row;
 }
