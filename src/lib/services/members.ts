@@ -58,7 +58,7 @@ export async function createMember(ctx: Ctx, input: MemberInput) {
   const existing = await db.member.findUnique({ where: { membershipNumber } });
   if (existing) throw new Error(`Membership number ${membershipNumber} is already in use.`);
 
-  return db.member.create({
+  const member = await db.member.create({
     data: {
       membershipNumber,
       firstName: input.firstName,
@@ -85,6 +85,22 @@ export async function createMember(ctx: Ctx, input: MemberInput) {
       bankAccountName: input.bankAccountName || null,
     },
   });
+
+  await logAudit(ctx, {
+    action: "MEMBER_CREATED",
+    entityType: "Member",
+    entityId: member.id,
+    after: {
+      membershipNumber: member.membershipNumber,
+      fullName: member.fullName,
+      department: member.department,
+      region: member.region,
+      openingSavingsBalance: num(member.openingSavingsBalance),
+      openingLoanBalance: num(member.openingLoanBalance),
+    },
+  });
+
+  return member;
 }
 
 export async function updateMember(ctx: Ctx, id: string, input: MemberInput) {
