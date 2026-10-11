@@ -14,6 +14,7 @@ export const NAV: NavItem[] = [
   { href: "/sales", label: "Product Sales", perm: "sale.view" },
   { href: "/schedule", label: "Deduction Schedule", perm: "schedule.view" },
   { href: "/reports", label: "Reports", perm: "reports.view" },
+  { href: "/dividends", label: "Dividends", perm: "dividend.view" },
   { href: "/audit-log", label: "Audit Log", perm: "audit.view" },
   { href: "/settings/organization", label: "Organization Settings", perm: "settings.manage" },
   { href: "/settings/api-keys", label: "API / ERP Integration", perm: "settings.manage" },

@@ -105,6 +105,11 @@ enum ImportRowStatus {
   FAILED
 }
 
+enum DeclarationStatus {
+  DRAFT
+  APPROVED
+}
+
 model User {
   id           String     @id @default(cuid())
   email        String     @unique
@@ -154,11 +159,12 @@ model Member {
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
 
-  user          User?
-  contributions Contribution[]
-  loans         Loan[]
-  productSales  ProductSale[]
-  paymentClaims PaymentClaim[]
+  user                User?
+  contributions       Contribution[]
+  loans               Loan[]
+  productSales        ProductSale[]
+  paymentClaims       PaymentClaim[]
+  dividendAllocations DividendAllocation[]
 
   @@index([status])
   @@index([region])
@@ -416,6 +422,17 @@ model CooperativeSettings {
   // closed, neither a member's purchase request nor a staff-created sale can go through — an
   // Admin opens the window manually when a sales period starts and closes it when it ends.
   productSalesOpen          Boolean  @default(true)
+  // Surplus appropriation policy — how a declared year-end surplus is split. The five rates
+  // below must sum to 1 (validated in the service layer, not the DB) before they can be saved.
+  // Defaults match the cooperative's long-standing policy at the time this feature was built.
+  reserveFundRate        Decimal @default(0.25) @db.Decimal(5, 4)
+  educationFundRate      Decimal @default(0.025) @db.Decimal(5, 4)
+  dividendRate           Decimal @default(0.50) @db.Decimal(5, 4)
+  honorariumRate         Decimal @default(0.05) @db.Decimal(5, 4)
+  meetingExpensesRate    Decimal @default(0.175) @db.Decimal(5, 4)
+  // How the dividend pool itself splits between the two eligibility bases — must sum to 1.
+  dividendSavingsRatio   Decimal @default(0.60) @db.Decimal(5, 4)
+  dividendRepaymentRatio Decimal @default(0.40) @db.Decimal(5, 4)
   updatedById               String?
   updatedAt                 DateTime @updatedAt
 }
@@ -446,4 +463,71 @@ model PasswordResetToken {
   createdAt DateTime  @default(now())
 
   @@index([userId])
+}
+
+// One per financial year. `declaredSurplus` is entered by an Admin from the cooperative's
+// audited accounts — coopms has no general ledger of its own (no expense tracking, no trading
+// account), so it cannot derive a surplus figure itself; it only computes the appropriation and
+// per-member dividend split once that figure is supplied. The rate/ratio fields are a snapshot
+// of CooperativeSettings at the moment of computation, so a later change to the org-wide policy
+// never silently rewrites a past year's declaration. While DRAFT, re-declaring the same year
+// recomputes it from scratch (old allocations replaced); once APPROVED it is locked.
+model SurplusDeclaration {
+  id              String            @id @default(cuid())
+  year            Int               @unique
+  declaredSurplus Decimal           @db.Decimal(14, 2)
+
+  reserveFundRate        Decimal @db.Decimal(5, 4)
+  educationFundRate      Decimal @db.Decimal(5, 4)
+  dividendRate           Decimal @db.Decimal(5, 4)
+  honorariumRate         Decimal @db.Decimal(5, 4)
+  meetingExpensesRate    Decimal @db.Decimal(5, 4)
+  dividendSavingsRatio   Decimal @db.Decimal(5, 4)
+  dividendRepaymentRatio Decimal @db.Decimal(5, 4)
+
+  reserveFundAmount     Decimal @db.Decimal(14, 2)
+  educationFundAmount   Decimal @db.Decimal(14, 2)
+  dividendAmount        Decimal @db.Decimal(14, 2)
+  honorariumAmount      Decimal @db.Decimal(14, 2)
+  meetingExpensesAmount Decimal @db.Decimal(14, 2)
+
+  dividendSavingsPool     Decimal @db.Decimal(14, 2)
+  dividendRepaymentPool   Decimal @db.Decimal(14, 2)
+  totalEligibleSavings    Decimal @db.Decimal(14, 2)
+  totalEligibleRepayments Decimal @db.Decimal(14, 2)
+  // Sum of per-member repayment dividends can fall short of dividendRepaymentPool when
+  // totalEligibleRepayments is 0 (nobody repaid anything that year) — the shortfall stays here
+  // rather than being silently dropped or force-distributed on some other basis.
+  unallocatedRepaymentPool Decimal @db.Decimal(14, 2)
+
+  status       DeclarationStatus @default(DRAFT)
+  declaredById String
+  approvedById String?
+  approvedAt   DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  allocations DividendAllocation[]
+
+  @@index([status])
+}
+
+// A member's computed share of one year's dividend — one row per member per declaration,
+// replaced wholesale whenever a DRAFT declaration is recomputed.
+model DividendAllocation {
+  id                 String             @id @default(cuid())
+  declarationId      String
+  declaration        SurplusDeclaration @relation(fields: [declarationId], references: [id], onDelete: Cascade)
+  memberId           String
+  member             Member             @relation(fields: [memberId], references: [id])
+  eligibleSavings    Decimal            @db.Decimal(14, 2)
+  eligibleRepayments Decimal            @db.Decimal(14, 2)
+  savingsDividend    Decimal            @db.Decimal(14, 2)
+  repaymentDividend  Decimal            @db.Decimal(14, 2)
+  totalDividend      Decimal            @db.Decimal(14, 2)
+  createdAt          DateTime           @default(now())
+
+  @@unique([declarationId, memberId])
+  @@index([declarationId])
+  @@index([memberId])
 }

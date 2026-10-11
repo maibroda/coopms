@@ -3,6 +3,7 @@ import { requirePage } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { memberLedger } from "@/lib/services/members";
 import { listMyPaymentClaims } from "@/lib/services/paymentClaims";
+import { getMyDividendHistory } from "@/lib/services/dividends";
 import { num, sum, naira } from "@/lib/money";
 import { fmtDate } from "@/lib/dates";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -40,6 +41,7 @@ export default async function MeStatementPage() {
 
   const ledger = await memberLedger(ctx.memberId);
   const claims = await listMyPaymentClaims(ctx);
+  const dividends = await getMyDividendHistory(ctx);
 
   const savings = sum([num(member.openingSavingsBalance), ...member.contributions.map((c) => num(c.amount))]);
   const outstandingLoans = sum([
@@ -143,6 +145,39 @@ export default async function MeStatementPage() {
               <TR>
                 <TD colSpan={4} className="py-6 text-center text-muted-foreground">
                   No purchases on record.
+                </TD>
+              </TR>
+            )}
+          </TBody>
+        </Table>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>My dividends</CardTitle>
+        </CardHeader>
+        <Table>
+          <THead>
+            <TR>
+              <TH>Year</TH>
+              <TH>Savings-based</TH>
+              <TH>Repayment-based</TH>
+              <TH>Total</TH>
+            </TR>
+          </THead>
+          <TBody>
+            {dividends.map((d) => (
+              <TR key={d.id}>
+                <TD>{d.declaration.year}</TD>
+                <TD>{naira(d.savingsDividend)}</TD>
+                <TD>{naira(d.repaymentDividend)}</TD>
+                <TD className="font-semibold">{naira(d.totalDividend)}</TD>
+              </TR>
+            ))}
+            {dividends.length === 0 && (
+              <TR>
+                <TD colSpan={4} className="py-6 text-center text-muted-foreground">
+                  No dividends declared yet.
                 </TD>
               </TR>
             )}

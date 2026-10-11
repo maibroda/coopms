@@ -20,6 +20,8 @@ export const PERMISSIONS = [
   "approvals.manage",
   "payments.manage",
   "audit.view",
+  "dividend.view",
+  "dividend.manage",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -43,6 +45,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "approvals.manage",
     "payments.manage",
     "audit.view",
+    "dividend.view",
   ],
   MEMBER: ["self.view", "self.request"],
 };

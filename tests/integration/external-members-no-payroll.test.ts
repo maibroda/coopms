@@ -15,6 +15,8 @@ describe("external members are excluded from the payroll deduction schedule", ()
 
   beforeAll(async () => {
     await db.$transaction([
+      db.dividendAllocation.deleteMany(),
+      db.surplusDeclaration.deleteMany(),
       db.paymentClaim.deleteMany(),
       db.auditLog.deleteMany(),
       db.cooperativeSettings.deleteMany(),

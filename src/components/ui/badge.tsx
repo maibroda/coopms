@@ -20,6 +20,8 @@ const STATUS_TONE: Record<string, Tone> = {
   PENDING: "amber",
   REJECTED: "red",
   CONFIRMED: "green",
+  DRAFT: "amber",
+  APPROVED: "green",
 };
 
 export function Badge({

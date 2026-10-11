@@ -11,6 +11,8 @@ describe("new members under 6 months can't borrow, but can still buy on credit",
 
   beforeAll(async () => {
     await db.$transaction([
+      db.dividendAllocation.deleteMany(),
+      db.surplusDeclaration.deleteMany(),
       db.paymentClaim.deleteMany(),
       db.auditLog.deleteMany(),
       db.cooperativeSettings.deleteMany(),

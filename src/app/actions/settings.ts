@@ -47,6 +47,25 @@ export async function setLoanProductActiveAction(id: string, isActive: boolean) 
   );
 }
 
+export async function setAppropriationRatesAction(v: V) {
+  return act(
+    "settings.manage",
+    async (ctx) => {
+      await svc.setAppropriationRates(ctx, {
+        reserveFundRate: Number(v.reserveFundRate),
+        educationFundRate: Number(v.educationFundRate),
+        dividendRate: Number(v.dividendRate),
+        honorariumRate: Number(v.honorariumRate),
+        meetingExpensesRate: Number(v.meetingExpensesRate),
+        dividendSavingsRatio: Number(v.dividendSavingsRatio),
+        dividendRepaymentRatio: Number(v.dividendRepaymentRatio),
+      });
+      return { message: "Appropriation and dividend policy updated." };
+    },
+    ["/settings/organization", "/dividends"],
+  );
+}
+
 export async function setProductSalesOpenAction(open: boolean) {
   return act(
     "settings.manage",

@@ -15,6 +15,7 @@ import {
 } from "./reports";
 import type { Ctx } from "@/lib/auth/context";
 import { can, ForbiddenError } from "@/lib/auth/permissions";
+import { getDeclaration } from "./dividends";
 
 function styleHeader(ws: ExcelJS.Worksheet) {
   ws.getRow(1).font = { bold: true };
@@ -330,5 +331,48 @@ export async function exportReportsXlsx(ctx: Ctx): Promise<Buffer> {
   }
   styleHeader(irregularSheet);
 
+  return toBuffer(wb);
+}
+
+export async function exportDividendAllocationsXlsx(ctx: Ctx, declarationId: string): Promise<Buffer> {
+  const declaration = await getDeclaration(ctx, declarationId);
+  const allocations = await db.dividendAllocation.findMany({
+    where: { declarationId },
+    include: { member: { select: { membershipNumber: true, fullName: true } } },
+    orderBy: { totalDividend: "desc" },
+  });
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(`Dividend ${declaration.year}`);
+  ws.columns = [
+    { header: "Membership No", key: "no", width: 16 },
+    { header: "Member", key: "name", width: 28 },
+    { header: "Eligible Savings", key: "savings", width: 18 },
+    { header: "Eligible Repayments", key: "repayments", width: 20 },
+    { header: "Savings Dividend", key: "savingsDiv", width: 18 },
+    { header: "Repayment Dividend", key: "repaymentDiv", width: 20 },
+    { header: "Total Dividend", key: "total", width: 18 },
+  ];
+  for (const a of allocations) {
+    ws.addRow({
+      no: a.member.membershipNumber,
+      name: a.member.fullName,
+      savings: num(a.eligibleSavings),
+      repayments: num(a.eligibleRepayments),
+      savingsDiv: num(a.savingsDividend),
+      repaymentDiv: num(a.repaymentDividend),
+      total: num(a.totalDividend),
+    });
+  }
+  const totalRow = ws.addRow({
+    name: "TOTAL",
+    savings: num(declaration.totalEligibleSavings),
+    repayments: num(declaration.totalEligibleRepayments),
+    savingsDiv: sum(allocations.map((a) => num(a.savingsDividend))),
+    repaymentDiv: sum(allocations.map((a) => num(a.repaymentDividend))),
+    total: sum(allocations.map((a) => num(a.totalDividend))),
+  });
+  totalRow.font = { bold: true };
+  styleHeader(ws);
   return toBuffer(wb);
 }

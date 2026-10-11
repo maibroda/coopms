@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requirePage } from "@/lib/auth/session";
 import { getSettings, listLoanProducts } from "@/lib/services/settings";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { SettingsForm } from "@/components/forms/settings-form";
 import { AddLoanProductForm, ToggleLoanProductButton } from "@/components/forms/loan-product-manager";
 import { ProductSalesToggle } from "@/components/forms/product-sales-toggle";
+import { AppropriationRatesForm } from "@/components/forms/appropriation-rates-form";
 
 export default async function OrganizationSettingsPage() {
   await requirePage("settings.manage");
@@ -32,6 +34,30 @@ export default async function OrganizationSettingsPage() {
         </CardHeader>
         <CardContent className="p-4">
           <ProductSalesToggle open={settings.productSalesOpen} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Surplus appropriation &amp; dividend policy</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Governs every <Link href="/dividends" className="underline">Dividends</Link> declaration going forward — a change here
+            does not retroactively affect already-declared years, since each declaration snapshots the rates in force at the
+            time it was computed.
+          </p>
+        </CardHeader>
+        <CardContent className="p-4">
+          <AppropriationRatesForm
+            rates={{
+              reserveFundRate: settings.reserveFundRate,
+              educationFundRate: settings.educationFundRate,
+              dividendRate: settings.dividendRate,
+              honorariumRate: settings.honorariumRate,
+              meetingExpensesRate: settings.meetingExpensesRate,
+              dividendSavingsRatio: settings.dividendSavingsRatio,
+              dividendRepaymentRatio: settings.dividendRepaymentRatio,
+            }}
+          />
         </CardContent>
       </Card>
 

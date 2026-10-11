@@ -13,6 +13,8 @@ describe("early payoff recompute and admin loan adjustment", () => {
 
   beforeAll(async () => {
     await db.$transaction([
+      db.dividendAllocation.deleteMany(),
+      db.surplusDeclaration.deleteMany(),
       db.paymentClaim.deleteMany(),
       db.auditLog.deleteMany(),
       db.cooperativeSettings.deleteMany(),
